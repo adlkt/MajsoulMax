@@ -1,0 +1,11 @@
+.DS_Store
+.venv/
+.mitmproxy/
+__pycache__/
+*.pyc
+.env
+config/settings.yaml
+config/settings.*.yaml
+.workbuddy/
+
+.doc

@@ -1,10 +1,11 @@
 import liqi_new
 import asyncio
+import os
 from mitmproxy.tools.dump import DumpMaster
 from mitmproxy.options import Options
 from loguru import logger
 from mitmproxy import http, ctx
-from plugin import helper, mod,replace
+from plugin import helper, mod, replace
 from ruamel.yaml import YAML
 from sys import stdout
 from plugin import update_liqi
@@ -39,10 +40,21 @@ plugin_enable:
 # liqi用于解析雀魂消息
 liqi:
   auto_update: true  # 是否自动更新
-  github_token: '' # 仅供自己使用，请勿泄漏给任何人
   liqi_version: 'v0.11.219.w'  # 本地liqi文件版本
   liqi_hash: 'e6a718c1e50b41471453b16c75b2992cbb05c2c84297b6d55edd1499a089530e'  # 本地liqi文件hash
 """)
+# 从 .env 文件加载环境变量（不上传 GitHub，安全存储敏感信息）
+try:
+    with open("./.env", "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                key, _, value = line.partition("=")
+                os.environ[key.strip()] = value.strip().strip("'").strip('"')
+    logger.info("已从 .env 加载环境变量")
+except FileNotFoundError:
+    logger.warning("未找到 .env 文件，liqi 自动更新可能无法使用")
+
 try:
     with open("./config/settings.yaml", "r", encoding="utf-8") as f:
         SETTINGS.update(yaml.load(f))
@@ -57,21 +69,24 @@ except:
 
 MOD_ENABLE = SETTINGS["plugin_enable"]["mod"]
 HELPER_ENABLE = SETTINGS["plugin_enable"]["helper"]
-REPLACE_ENABLE = SETTINGS['plugin_enable']["replace"]
+REPLACE_ENABLE = SETTINGS["plugin_enable"]["replace"]
 if SETTINGS["liqi"]["auto_update"]:
     if "liqi_hash" not in SETTINGS["liqi"]:
         SETTINGS["liqi"]["liqi_hash"] = ""
     logger.info("正在检测liqi文件更新，请稍候……")
     try:
+        github_token = os.environ.get("GITHUB_TOKEN", "")
         result = update_liqi.update(
             SETTINGS["liqi"]["liqi_version"],
-            SETTINGS["liqi"]["github_token"],
+            github_token,
             SETTINGS["liqi"]["liqi_hash"],
         )
         SETTINGS["liqi"]["liqi_version"] = result["version"]
         SETTINGS["liqi"]["liqi_hash"] = result["hash"]
     except:
         logger.critical("liqi文件更新失败！可能会导致部分消息无法解析！")
+# 写回前清理敏感字段，确保 token 不会泄露到 yaml 文件中
+SETTINGS["liqi"].pop("github_token", None)
 with open("./config/settings.yaml", "w", encoding="utf-8") as f:
     yaml.dump(SETTINGS, f)
 logger.success(
@@ -109,11 +124,11 @@ class MajsoulMaxAddon:
         # 解析proto消息
         if MOD_ENABLE:
             # 如果启用mod，就把WS消息丢进mod里
-            if not message.injected: # 不解析MAX自己插入的WS消息
+            if not message.injected:  # 不解析MAX自己插入的WS消息
                 modify, drop, msg, inject, inject_msg = mod_plugin.main(
                     message, liqi_proto
                 )
-                if drop: 
+                if drop:
                     message.drop()
                 if inject:
                     ctx.master.commands.call(
@@ -123,44 +138,35 @@ class MajsoulMaxAddon:
                     # 如果被mod修改就同步变更
                     message.content = msg
         try:
-            result = liqi_proto.parse(message) # 解析消息
+            result = liqi_proto.parse(message)  # 解析消息，维护 res_type 映射（mod 依赖）
         except:
             if message.from_client is False:
                 logger.error(f"接收到(error):{message.content}")
             else:
                 logger.error(f"已发送(error):{message.content}")
         else:
-            if message.from_client is False:
-                if message.injected:
-                    logger.success(f"接收到(injected)：{result}")
-                elif MOD_ENABLE and modify:
-                    logger.success(f"接收到(modify)：{result}")
-                elif MOD_ENABLE and drop:
-                    logger.success(f"接收到(drop)：{result}")
-                else:
-                    logger.info(f"接收到：{result}")
-                if HELPER_ENABLE:
-                    # 如果启用helper，就把消息丢进helper里
+            if HELPER_ENABLE:
+                if message.from_client is False:
                     helper_plugin.main(result)
-            else:
-                if MOD_ENABLE and modify:
-                    logger.success(f"已发送(modify)：{result}")
-                else:
-                    logger.info(f"已发送：{result}")
-    def request(self,flow: http.HTTPFlow):
+
+    def request(self, flow: http.HTTPFlow):
         # 在捕获到HTTP消息时触发
         if REPLACE_ENABLE:
             # 如果启用replace，就把HTTP消息丢进replace里
             path = replace_plugin.main(flow.request)
-            if path != '':
-                with open(f"./replace{path}","rb") as f:
-                    if (body := f.read() )!=b"":
-                        flow.response = http.Response.make(200, body) #,  {"Content-Type": "image/png"})
+            if path != "":
+                with open(f"./replace{path}", "rb") as f:
+                    if (body := f.read()) != b"":
+                        flow.response = http.Response.make(
+                            200, body
+                        )  # ,  {"Content-Type": "image/png"})
                         logger.success(f"已替换(replace)：{flow.request.path}")
                     else:
                         logger.error(f"替换错误(error):{flow.request.path}")
 
+
 addons = [MajsoulMaxAddon()]
+
 
 async def start_mitm():
     # 创建 mitmproxy 配置
