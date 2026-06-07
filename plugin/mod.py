@@ -694,7 +694,6 @@ mod: {}
                         )
                         # 消除传记红点
                         data.activity_data.ClearField("spot_data")
-                        data.activity_data.ClearField("story_data")
                         self._inject_spot_data(data.activity_data)
                         self._capture(method_name, data, "modified")
                         self.SaveSettings()
@@ -790,8 +789,7 @@ mod: {}
         return int("40" + str(charid)[4:] + "01")
 
     def _inject_spot_data(self, activity_data: Any) -> None:
-        """向 activity_data 注入传记进度（spot_data + story_data），消除红点"""
-        # spot_data: 控制传记 spot 的解锁和奖励状态
+        """向 activity_data.spot_data 注入传记进度，消除红点"""
         spot_activity = activity_data.spot_data.add()
         for unique_id, max_ending in self.settings["mod"]["spots"].items():
             s = spot_activity.spots.add()
@@ -799,15 +797,6 @@ mod: {}
             s.unlocked = 1
             s.unlocked_ending.extend(range(1, max_ending + 1))
             s.rewarded = 1
-        # story_data: 控制每个传记故事的完成状态
-        story_activity = activity_data.story_data.add()
-        for ending_id in self.settings["mod"]["endings"]:
-            us = story_activity.unlocked_story.add()
-            us.story_id = ending_id
-            us.finished_ending.append(ending_id % 10)
-            us.rewarded_ending.append(ending_id % 10)
-            us.finish_rewarded = 1
-            us.all_finish_rewarded = 1
 
     def _boost_character(self, character: Any) -> None:
         """注入角色等级/经验/奖励等级"""
