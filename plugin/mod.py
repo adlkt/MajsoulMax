@@ -112,7 +112,6 @@ mod: {}
         self.settings["mod"]["loading_image"] = []
         self.settings["mod"]["emoji"] = {}
         self.settings["mod"]["endings"] = []
-        self.settings["mod"]["spots"] = {}  # unique_id → max_ending 映射
         for data in config_table.datas:
             class_words = f"{data.table}_{data.sheet}".split("_")
             class_name = "".join(name.capitalize() for name in class_words)
@@ -168,11 +167,6 @@ mod: {}
                     for item in data.data:
                         pb.ParseFromString(item)
                         self.settings["mod"]["endings"].append(pb.id)
-                        unique_id = pb.id // 10  # 1000061 → 100006
-                        ending_num = pb.id % 10
-                        self.settings["mod"]["spots"][unique_id] = max(
-                            ending_num, self.settings["mod"]["spots"].get(unique_id, 0)
-                        )
 
     def update_resource(self) -> None:
         # 获取资源文件版本
@@ -692,9 +686,6 @@ mod: {}
                             self.settings["config"]["random_character"],
                             data.random_character,
                         )
-                        # 消除传记红点
-                        data.activity_data.ClearField("spot_data")
-                        self._inject_spot_data(data.activity_data)
                         self._capture(method_name, data, "modified")
                         self.SaveSettings()
 
@@ -787,16 +778,6 @@ mod: {}
         if charid in cfg["characters"]:
             return cfg["characters"][charid]
         return int("40" + str(charid)[4:] + "01")
-
-    def _inject_spot_data(self, activity_data: Any) -> None:
-        """向 activity_data.spot_data 注入传记进度，消除红点"""
-        spot_activity = activity_data.spot_data.add()
-        for unique_id, max_ending in self.settings["mod"]["spots"].items():
-            s = spot_activity.spots.add()
-            s.unique_id = unique_id
-            s.unlocked = 1
-            s.unlocked_ending.extend(range(1, max_ending + 1))
-            s.rewarded = 1
 
     def _boost_character(self, character: Any) -> None:
         """注入角色等级/经验/奖励等级"""
