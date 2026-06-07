@@ -3,7 +3,7 @@ import requests
 import random
 import json
 import os
-from typing import Any, Optional, Tuple
+from typing import Any, Tuple
 from datetime import datetime
 from ruamel.yaml import YAML
 from loguru import logger
@@ -18,7 +18,7 @@ class mod:
         self.version = version
         self.safe = {}
         self.yaml = YAML()
-        self.capture_mode = True  # 抓包模式：保存原始和注入后的消息
+        self.capture_mode = False  # 抓包模式，默认关闭，调试时改为 True
         self._capture_dir = "./captures"
         if self.capture_mode:
             os.makedirs(self._capture_dir, exist_ok=True)
@@ -582,30 +582,26 @@ mod: {}
                     case ".lq.Lobby.fetchAllCommonViews":  # 获取装扮
                         modify = True
                         data = liqi_pb2.ResAllcommonViews()
+                        data.ParseFromString(msg_block.data)
                         data.use = self.settings["config"]["views_index"]
-                        for i, view in self.settings["config"]["views"].items():
-                            views = data.views.add()
-                            json_format.ParseDict({"index": i, "values": view}, views)
-                        # 为每个装扮分类注入可选物品池，同时保留当前装备
-                        slot_pools = self._get_slot_item_pools()
-                        for idx, item_list in slot_pools.items():
-                            views = data.views[0]
-                            found = False
-                            for val in views.values:
-                                if val.slot == idx:
-                                    current_item = val.item_id
-                                    val.type = 1
-                                    del val.item_id_list[:]
-                                    val.item_id_list.extend(item_list)
-                                    val.item_id = current_item if current_item else item_list[0]
-                                    found = True
+                        # 用配置文件覆盖原始响应中的装备
+                        for i, view_cfg in self.settings["config"]["views"].items():
+                            if not view_cfg:
+                                continue
+                            for v in data.views:
+                                if v.index == i:
+                                    v.values.clear()
+                                    for slot_cfg in view_cfg:
+                                        vs = v.values.add()
+                                        json_format.ParseDict(slot_cfg, vs)
                                     break
-                            if not found:
-                                vs = views.values.add()
-                                vs.slot = idx
-                                vs.type = 1
-                                vs.item_id = item_list[0]
-                                vs.item_id_list.extend(item_list)
+                            else:
+                                views = data.views.add()
+                                json_format.ParseDict(
+                                    {"index": i, "values": view_cfg}, views
+                                )
+                        # 为每个 slot 补充完整物品池
+                        self._inject_slot_pools(data.views, data.use)
                     case ".lq.Lobby.fetchAnnouncement":
                         modify = True
                         data = liqi_pb2.ResAnnouncement()
@@ -701,6 +697,11 @@ mod: {}
                         for i, view in self.settings["config"]["views"].items():
                             views = data.all_common_views.views.add()
                             json_format.ParseDict({"index": i, "values": view}, views)
+                        # 为每个 slot 补充完整物品池
+                        self._inject_slot_pools(
+                            data.all_common_views.views,
+                            data.all_common_views.use,
+                        )
                         # 处理称号
                         data.ClearField("title_list")
                         data.title_list.title_list.extend(self.settings["mod"]["title"])
@@ -806,6 +807,27 @@ mod: {}
     def _get_slot_item_pools(self) -> dict:
         """返回 slot编号 → [该分类全部物品ID] 的映射"""
         return self.settings["mod"]["items_by_type"]
+
+    def _inject_slot_pools(self, views_list: Any, active_index: int) -> None:
+        """向装扮视图列表注入每个 slot 的完整物品池"""
+        slot_pools = self._get_slot_item_pools()
+        for idx, item_list in slot_pools.items():
+            for v in views_list:
+                if v.index == active_index:
+                    found = False
+                    for val in v.values:
+                        if val.slot == idx:
+                            del val.item_id_list[:]
+                            val.item_id_list.extend(item_list)
+                            found = True
+                            break
+                    if not found:
+                        vs = v.values.add()
+                        vs.slot = idx
+                        vs.type = 0
+                        vs.item_id = item_list[0]
+                        vs.item_id_list.extend(item_list)
+                    break
 
     def _boost_character(self, character: Any) -> None:
         """注入角色等级/经验/奖励等级"""
