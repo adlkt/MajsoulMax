@@ -1,10 +1,8 @@
 import liqi_new
 import requests
 import random
-import json
 import os
 from typing import Any, Tuple
-from datetime import datetime
 from ruamel.yaml import YAML
 from loguru import logger
 from struct import unpack
@@ -18,10 +16,6 @@ class mod:
         self.version = version
         self.safe = {}
         self.yaml = YAML()
-        self.capture_mode = False  # 抓包模式，默认关闭，调试时改为 True
-        self._capture_dir = "./captures"
-        if self.capture_mode:
-            os.makedirs(self._capture_dir, exist_ok=True)
         self.LoadSettings()
         logger.success("已载入mod")
 
@@ -399,7 +393,6 @@ mod: {}
                         data.ParseFromString(msg_block.data)
                         self.safe["main_character_id"] = data.main_character_id
                         self.safe["characters"] = data.characters
-                        self._capture(method_name, data, "original")
                         # START
                         data.ClearField("characters")
                         character_keys = self.settings["config"]["characters"].keys()
@@ -431,7 +424,6 @@ mod: {}
                         data.ClearField("rewarded_endings")
                         data.finished_endings.extend(self.settings["mod"]["endings"])
                         data.rewarded_endings.extend(self.settings["mod"]["endings"])
-                        self._capture(method_name, data, "modified")
                         self.SaveSettings()
                     case ".lq.Lobby.login" | ".lq.Lobby.oauth2Login":  # 登录时
                         modify = True
@@ -516,7 +508,6 @@ mod: {}
                     case ".lq.Lobby.fetchAccountInfo":  # 个人信息页和游戏结束
                         data = liqi_pb2.ResAccountInfo()
                         data.ParseFromString(msg_block.data)
-                        self._capture(method_name, data, "original")
                         if data.account.account_id == self.safe["account_id"]:
                             modify = True
                             data.account.avatar_id = self._resolve_skin(
@@ -537,7 +528,6 @@ mod: {}
                                 self.settings["config"]["loading_image"]
                             )
                             data.account.verified = self.settings["config"]["verified"]
-                            self._capture(method_name, data, "modified")
                     case ".lq.Lobby.fetchTitleList":  # 获取称号列表
                         modify = True
                         data = liqi_pb2.ResTitleList()
@@ -560,7 +550,6 @@ mod: {}
                         data = liqi_pb2.ResBagInfo()
                         data.ParseFromString(msg_block.data)
                         self.safe["items"] = data.bag.items
-                        self._capture(method_name, data, "original")
                         data.bag.ClearField("items")
                         # 添加原背包物品
                         for item in self.safe["items"]:
@@ -578,7 +567,6 @@ mod: {}
                             item = data.bag.items.add()
                             item.item_id = id
                             item.stack = 1
-                        self._capture(method_name, data, "modified")
                     case ".lq.Lobby.fetchAllCommonViews":  # 获取装扮
                         modify = True
                         data = liqi_pb2.ResAllcommonViews()
@@ -631,7 +619,6 @@ mod: {}
                             data.character_info.main_character_id
                         )
                         self.safe["characters"] = data.character_info.characters
-                        self._capture(method_name, data, "original")
                         data.character_info.ClearField("characters")
                         character_keys = self.settings["config"]["characters"].keys()
                         for c in self.settings["mod"]["character"]:
@@ -711,7 +698,6 @@ mod: {}
                             self.settings["config"]["random_character"],
                             data.random_character,
                         )
-                        self._capture(method_name, data, "modified")
                         self.SaveSettings()
 
                     case ".lq.Lobby.fetchServerSettings":
@@ -777,25 +763,6 @@ mod: {}
                 msg = buf[:3] + msg_block.SerializeToString()
 
         return modify, drop, msg, inject, inject_msg
-
-    def _capture(self, method_name: str, data: Any, suffix: str) -> None:
-        """抓包保存 protobuf 消息到文件（JSON + raw bytes）"""
-        if not self.capture_mode:
-            return
-        ts = datetime.now().strftime("%H%M%S_%f")[:9]
-        safe_name = method_name.replace(".", "_").replace("/", "_")
-        base = f"{self._capture_dir}/{safe_name}_{ts}_{suffix}"
-        # 保存可读 JSON
-        with open(f"{base}.json", "w", encoding="utf-8") as f:
-            d = json_format.MessageToDict(
-                data, preserving_proto_field_name=True,
-                including_default_value_fields=False,
-            )
-            json.dump(d, f, ensure_ascii=False, indent=2)
-        # 保存原始 protobuf 二进制
-        with open(f"{base}.bin", "wb") as f:
-            f.write(data.SerializeToString())
-        logger.debug(f"📦 已抓包: {base}.json")
 
     def _resolve_skin(self, charid: int) -> int:
         """获取角色皮肤 ID，若 characters dict 中不存在则生成默认皮肤"""
