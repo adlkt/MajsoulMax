@@ -44,7 +44,7 @@ def _read_local_hash():
 
 def _download_latest_release(token: str):
     req = requests.get(
-        "https://api.github.com/repos/Avenshy/AutoLiqi/releases/latest",
+        "https://api.github.com/repos/adlkt/AutoLiqi/releases/latest",
         timeout=10,
         headers=_auth_headers(token),
     )
@@ -64,7 +64,7 @@ def _download_liqi_assets(release: dict, token: str):
     blobs = {}
     for name in LIQI_FILES:
         item = assets[name]
-        logger.warning(f"下载 {name} 中……")
+        logger.info(f"下载 {name} 中……")
         req = requests.get(
             item["browser_download_url"], timeout=10, headers=_auth_headers(token)
         )
@@ -94,15 +94,15 @@ def update(version, token, stored_hash: str = ""):
         logger.error("""\
 github api额度用完，无法更新liqi文件！请尝试以下方法：\n
 1. 在 ./config/settings.yaml 中填入你的Github Token后重试\n
-2. 在 https://github.com/Avenshy/AutoLiqi/releases/latest 手动下载liqi.json、liqi.proto、liqi_pb2.py，放入 ./proto 中，覆盖同名文件\n
+2. 在 https://github.com/adlkt/AutoLiqi/releases/latest 手动下载liqi.json、liqi.proto、liqi_pb2.py，放入 ./proto 中，覆盖同名文件\n
 3. 使用或更换代理\n
 4. 等待1个小时后再试""")
         return {"version": version, "hash": local_hash or stored_hash}
 
     liqi = req.json()
     if liqi["tag_name"][: len(new_version)] != new_version:
-        logger.error("liqi文件需要更新，但AutoLiqi项目还未更新，晚点再来试试吧！")
-        logger.error("详细信息请看 https://github.com/Avenshy/AutoLiqi")
+        logger.warning("liqi文件需要更新，但 AutoLiqi 项目还未发布新版本，晚点再来试试吧！")
+        logger.info("详情: https://github.com/adlkt/AutoLiqi")
         return {"version": version, "hash": local_hash or stored_hash}
 
     blobs = _download_liqi_assets(liqi, token)

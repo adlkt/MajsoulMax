@@ -52,10 +52,8 @@ config:
         try:
             with open('./config/settings.helper.yaml', 'r', encoding='utf8') as f:
                 self.settings.update(self.yaml.load(f))
-        except:
-            logger.warning(
-                '未检测到helper配置文件，已生成默认配置，如需自定义helper配置请手动修改 ./config/settings.helper.yaml')
-            self.SaveSettings()
+        except Exception as e:
+            logger.warning(f'无法读取 helper 配置 ({e})，已使用默认配置')
 
     def SaveSettings(self):
         with open('./config/settings.helper.yaml', 'w', encoding='utf8') as f:
@@ -91,10 +89,10 @@ config:
                 data = {'sync_game_actions': actions}
             else:
                 data = result['data']
-            logger.success(f'[helper] 已发送：{data}')
+            logger.debug(f'[helper] → {result["method"]}')
             requests.post(self.settings['config']
                           ['api_url'], json=data, verify=False)
             if 'liqi' in data.keys():  # 补发立直消息
-                logger.success(f'[helper] 已发送：{data["liqi"]}')
+                logger.debug('[helper] → liqi')
                 requests.post(self.settings['config']['api_url'],
                               json=data['liqi'], verify=False)

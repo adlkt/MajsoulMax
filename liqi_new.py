@@ -32,7 +32,10 @@ class LiqiProto:
         if msg_type == MsgType.Notify:
             msg_block.ParseFromString(buf[1:])      # 解析剩余报文结构
             method_name = msg_block.method_name
-            _, lq, message_name = method_name.split('.')
+            parts = method_name.split('.')
+            if len(parts) < 3:
+                raise ValueError(f"Notify method_name 格式异常: {method_name}")
+            lq, message_name = parts[-2], parts[-1]
             liqi_pb2_notify = getattr(liqi_pb2, message_name)
             proto_obj = liqi_pb2_notify.FromString(msg_block.data)
             dict_obj = MessageToDict(
@@ -53,7 +56,10 @@ class LiqiProto:
                 # assert(len(msg_block) == 2)
                 assert (msg_id not in self.res_type)
                 method_name = msg_block.method_name
-                _, lq, service, rpc = method_name.split('.')
+                parts = method_name.split('.')
+                if len(parts) < 4:
+                    raise ValueError(f"Req method_name 格式异常: {method_name}")
+                lq, service, rpc = parts[-3], parts[-2], parts[-1]
                 proto_domain = self.jsonProto['nested'][lq]['nested'][service]['methods'][rpc]
                 liqi_pb2_req = getattr(liqi_pb2, proto_domain['requestType'])
                 proto_obj = liqi_pb2_req.FromString(msg_block.data)

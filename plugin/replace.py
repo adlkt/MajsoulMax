@@ -16,9 +16,8 @@ config:
         try:
             with open('./config/settings.replace.yaml', 'r', encoding='utf8') as f:
                 self.settings.update(self.yaml.load(f))
-        except:
-            logger.warning(
-                '未检测到replace配置文件，已生成默认配置，如需自定义replace配置请手动修改 ./config/settings.replace.yaml')
+        except Exception as e:
+            logger.warning(f'无法读取 replace 配置 ({e})，已使用默认配置')
             self.SaveSettings()
 
     def SaveSettings(self):

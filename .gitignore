@@ -6,6 +6,9 @@ __pycache__/
 .env
 config/settings.yaml
 config/settings.*.yaml
+captures/
 .workbuddy/
 
 .doc
+
+.learnings
