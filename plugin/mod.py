@@ -112,6 +112,7 @@ mod: {}
         self.settings["mod"]["loading_image"] = []
         self.settings["mod"]["emoji"] = {}
         self.settings["mod"]["endings"] = []
+        self.settings["mod"]["items_by_type"] = {}  # slot → [item_ids]
         for data in config_table.datas:
             class_words = f"{data.table}_{data.sheet}".split("_")
             class_name = "".join(name.capitalize() for name in class_words)
@@ -140,8 +141,11 @@ mod: {}
                         pb.ParseFromString(item)
                         match pb.category:
                             case 5:
-                                # if pb.id not in self.settings['mod']['item']:
                                 self.settings["mod"]["item"].append(pb.id)
+                                t = pb.type
+                                if t not in self.settings["mod"]["items_by_type"]:
+                                    self.settings["mod"]["items_by_type"][t] = []
+                                self.settings["mod"]["items_by_type"][t].append(pb.id)
                             # 加了就会无法变更称号 这到底是为什么呢
                             # case 7:
                             #     if pb.id not in self.settings['mod']['title']:
@@ -582,6 +586,26 @@ mod: {}
                         for i, view in self.settings["config"]["views"].items():
                             views = data.views.add()
                             json_format.ParseDict({"index": i, "values": view}, views)
+                        # 为每个装扮分类注入可选物品池，同时保留当前装备
+                        slot_pools = self._get_slot_item_pools()
+                        for idx, item_list in slot_pools.items():
+                            views = data.views[0]
+                            found = False
+                            for val in views.values:
+                                if val.slot == idx:
+                                    current_item = val.item_id
+                                    val.type = 1
+                                    del val.item_id_list[:]
+                                    val.item_id_list.extend(item_list)
+                                    val.item_id = current_item if current_item else item_list[0]
+                                    found = True
+                                    break
+                            if not found:
+                                vs = views.values.add()
+                                vs.slot = idx
+                                vs.type = 1
+                                vs.item_id = item_list[0]
+                                vs.item_id_list.extend(item_list)
                     case ".lq.Lobby.fetchAnnouncement":
                         modify = True
                         data = liqi_pb2.ResAnnouncement()
@@ -778,6 +802,10 @@ mod: {}
         if charid in cfg["characters"]:
             return cfg["characters"][charid]
         return int("40" + str(charid)[4:] + "01")
+
+    def _get_slot_item_pools(self) -> dict:
+        """返回 slot编号 → [该分类全部物品ID] 的映射"""
+        return self.settings["mod"]["items_by_type"]
 
     def _boost_character(self, character: Any) -> None:
         """注入角色等级/经验/奖励等级"""
