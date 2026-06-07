@@ -1,0 +1,5 @@
+# mitmdump 启动参数
+# 选项名与 mitmdump --help 中的一致
+# 更多选项：https://docs.mitmproxy.org/stable/concepts-options/
+
+flow_detail: 0  # 0=静默, 1=简略, 2=含header, 3~4=详细

@@ -9,25 +9,29 @@ from plugin import helper, mod, replace
 from ruamel.yaml import YAML
 from sys import stdout
 from plugin import update_liqi
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+from rich.traceback import install as install_rich_traceback
+
+install_rich_traceback(show_locals=False, width=100)
+console = Console()
 
 VERSION = "20260212"
-logger.warning(
-    f"\n\n雀魂MAX        作者：Avenshy        版本：{VERSION}\n\
-开源地址：https://github.com/Avenshy/MajsoulMax\n\n\
-本工具完全免费、开源，如果您为此付费，说明您被骗了！\n\
-本工具仅供学习交流，请在下载后24小时内删除，不得用于商业用途，否则后果自负！\n\
-本工具有可能导致账号被封禁，给猫粮充钱才是正道！\n\n\
-请作者喝咖啡：\n\
-爱发电，支持支付宝、微信：https://afdian.net/a/Avenshy\n\
-Patreon，支持Paypal、信用卡：https://patreon.com/Avenshy\n\n\
-再次重申：脚本完全免费使用，没有收费功能，请喝咖啡完全自愿，作者非常感谢您！\n\n"
-)
+# —— Banner ——
+console.print(Panel.fit(
+    f"[bold cyan]🀄 雀魂 MAX[/bold cyan]  [dim]v{VERSION}[/dim]\n\n"
+    "[dim]完全免费 · 开源 · 仅供学习交流[/dim]",
+    border_style="cyan",
+    padding=(1, 3),
+))
 
+# —— Logger ——
 logger.remove()
 logger.add(
     stdout,
     colorize=True,
-    format="<cyan>[{time:HH:mm:ss.SSS}]</cyan> <level>{message}</level>",
+    format="<dim>[{time:HH:mm:ss.SSS}]</dim> <level>{message}</level>",
 )
 # 导入配置
 yaml = YAML()
@@ -58,12 +62,9 @@ except FileNotFoundError:
 try:
     with open("./config/settings.yaml", "r", encoding="utf-8") as f:
         SETTINGS.update(yaml.load(f))
-except:
+except Exception as e:
     logger.warning(
-        """首次运行，默认启用mod，禁用helper\n
-        如需使用，请修改./config/settings.yaml文件\n
-        修改完成后重新启动即可\n
-        """
+        f"无法读取 settings.yaml ({e})，使用默认配置：mod 启用，helper 禁用"
     )
 
 
@@ -83,19 +84,26 @@ if SETTINGS["liqi"]["auto_update"]:
         )
         SETTINGS["liqi"]["liqi_version"] = result["version"]
         SETTINGS["liqi"]["liqi_hash"] = result["hash"]
-    except:
-        logger.critical("liqi文件更新失败！可能会导致部分消息无法解析！")
+    except Exception as e:
+        logger.critical(f"liqi文件更新失败 ({e})，部分消息可能无法解析")
 # 写回前清理敏感字段，确保 token 不会泄露到 yaml 文件中
 SETTINGS["liqi"].pop("github_token", None)
 with open("./config/settings.yaml", "w", encoding="utf-8") as f:
     yaml.dump(SETTINGS, f)
-logger.success(
-    f"""已载入配置：\n
-    启用mod: {MOD_ENABLE}\n
-    启用helper：{HELPER_ENABLE}\n
-    启用replace：{REPLACE_ENABLE}\n
-    """
-)
+# —— 启动状态 ——
+status_table = Table(title="启动状态", border_style="dim blue", show_header=False)
+status_table.add_column("项", style="dim")
+status_table.add_column("值")
+
+def _status(label: str, enabled: bool) -> str:
+    return "[green]● 启用[/green]" if enabled else "[dim]○ 关闭[/dim]"
+
+status_table.add_row("Mod 插件", _status("mod", MOD_ENABLE))
+status_table.add_row("Helper 插件", _status("helper", HELPER_ENABLE))
+status_table.add_row("Replace 插件", _status("replace", REPLACE_ENABLE))
+console.print(status_table)
+console.print()
+
 if MOD_ENABLE:
     mod_plugin = mod.mod(VERSION)
 if HELPER_ENABLE:
@@ -104,9 +112,7 @@ if REPLACE_ENABLE:
     replace_plugin = replace.replace()
 liqi_proto = liqi_new.LiqiProto()
 if not (MOD_ENABLE or HELPER_ENABLE or REPLACE_ENABLE):
-    logger.warning(
-        "请注意，当前没有开启任何功能，请修改./config/settings.yaml文件并重新启动！"
-    )
+    logger.warning("当前没有启用任何功能，请修改 ./config/settings.yaml 后重新启动")
 
 
 class MajsoulMaxAddon:
@@ -117,9 +123,9 @@ class MajsoulMaxAddon:
         # 不解析ob消息
         if flow.request.path == "/ob":
             if message.from_client is False:
-                logger.debug(f"接收到（未解析）：{message.content}")
+                logger.debug(f"⬇ ob ({len(message.content)}B)")
             else:
-                logger.debug(f"已发送（未解析）：{message.content}")
+                logger.debug(f"⬆ ob ({len(message.content)}B)")
             return
         # 解析proto消息
         if MOD_ENABLE:
@@ -139,11 +145,9 @@ class MajsoulMaxAddon:
                     message.content = msg
         try:
             result = liqi_proto.parse(message)  # 解析消息，维护 res_type 映射（mod 依赖）
-        except:
-            if message.from_client is False:
-                logger.error(f"接收到(error):{message.content}")
-            else:
-                logger.error(f"已发送(error):{message.content}")
+        except Exception as e:
+            direction = "⬇" if not message.from_client else "⬆"
+            logger.error(f"{direction} 解析失败 ({len(message.content)}B): {e}")
         else:
             if HELPER_ENABLE:
                 if message.from_client is False:
@@ -160,25 +164,22 @@ class MajsoulMaxAddon:
                         flow.response = http.Response.make(
                             200, body
                         )  # ,  {"Content-Type": "image/png"})
-                        logger.success(f"已替换(replace)：{flow.request.path}")
+                        logger.success(f"✓ 已替换 {flow.request.path}")
                     else:
-                        logger.error(f"替换错误(error):{flow.request.path}")
+                        logger.error(f"✗ 替换失败 {flow.request.path}")
 
 
 addons = [MajsoulMaxAddon()]
 
 
 async def start_mitm():
-    # 创建 mitmproxy 配置
+    console.print("[dim]⏳ mitmproxy 启动中...[/dim]")
     opts = Options(listen_host="0.0.0.0", listen_port=23410, ssl_insecure=True)
-    # 创建 DumpMaster，类似于 mitmdump 的功能
     master = DumpMaster(opts)
-    # 加载自定义插件
     master.addons.add(MajsoulMaxAddon())
     try:
-        # 启动 mitmproxy
+        logger.info("代理已启动 → 0.0.0.0:23410")
         await master.run()
-        master
     except KeyboardInterrupt:
         master.shutdown()
 
