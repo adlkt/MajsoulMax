@@ -287,6 +287,7 @@ mod: {}
                         character.charid = data.character_id
                         character.skin = data.skin
                         character.exp = 0
+                        character.is_upgraded = True
                         character.level = 5
                         character.rewarded_level.extend([1, 2, 3, 4, 5])
                         if self.settings["config"]["emoji"]:
@@ -408,6 +409,7 @@ mod: {}
                             character = data.characters.add()
                             character.charid = c
                             character.exp = 0
+                            character.is_upgraded = True
                             character.level = 5
                             character.rewarded_level.extend([1, 2, 3, 4, 5])
                             if c not in character_keys:
@@ -622,6 +624,7 @@ mod: {}
                             character = data.character_info.characters.add()
                             character.charid = c
                             character.exp = 0
+                            character.is_upgraded = True
                             character.level = 5
                             character.rewarded_level.extend([1, 2, 3, 4, 5])
                             if c not in character_keys:
@@ -809,6 +812,7 @@ mod: {}
     def _boost_character(self, character: Any) -> None:
         """注入角色等级/经验/奖励等级"""
         character.level = 5
+        character.is_upgraded = True
         character.exp = 0
         character.rewarded_level.extend([1, 2, 3, 4, 5])
 
