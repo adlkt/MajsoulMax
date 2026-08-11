@@ -19,18 +19,6 @@ BASE_DIR = Path(__file__).resolve().parent
 
 VERSION = "v2026.07.07"
 
-# logger.warning(
-#     f"\n\n雀魂MAX        作者：Avenshy        版本：{VERSION}\n\
-# 开源地址：https://github.com/Avenshy/MajsoulMax\n\n\
-# 本工具完全免费、开源，如果您为此付费，说明您被骗了！\n\
-# 本工具仅供学习交流，请在下载后24小时内删除，不得用于商业用途，否则后果自负！\n\
-# 本工具有可能导致账号被封禁，给猫粮充钱才是正道！\n\n\
-# 请作者喝咖啡：\n\
-# 爱发电，支持支付宝、微信：https://afdian.net/a/Avenshy\n\
-# Patreon，支持Paypal、信用卡：https://patreon.com/Avenshy\n\n\
-# 再次重申：脚本完全免费使用，没有收费功能，请喝咖啡完全自愿，作者非常感谢您！\n\n"
-# )
-
 
 logger.remove()
 logger.add(
