@@ -115,9 +115,15 @@ class MajsoulMaxAddon:
         if MOD_ENABLE:
             # 如果启用mod，就把WS消息丢进mod里
             if not message.injected: # 不解析MAX自己插入的WS消息
-                modify, drop, msg, inject, inject_msg = mod_plugin.main(
-                    message, liqi_proto
-                )
+                try:
+                    modify, drop, msg, inject, inject_msg = mod_plugin.main(
+                        message, liqi_proto
+                    )
+                except Exception as e:
+                    # 畸形/异常消息不能中断 addon，跳过 mod 处理继续走 parse
+                    logger.warning(f"mod 处理异常，跳过: {e}")
+                    modify = drop = inject = False
+                    msg = inject_msg = b""
                 if drop: 
                     message.drop()
                 if inject:
@@ -130,10 +136,9 @@ class MajsoulMaxAddon:
         try:
             result = liqi_proto.parse(message) # 解析消息
         except Exception as e:
-            if message.from_client is False:
-                logger.error(f"接收到(error):{message.content} ({e})")
-            else:
-                logger.error(f"已发送(error):{message.content} ({e})")
+            # 只记录消息长度与方向，不打印原始字节（WS 流量可能含账号 token，防泄漏）
+            direction = "接收到" if message.from_client is False else "已发送"
+            logger.error(f"{direction}(error) len={len(message.content)}B: {e}")
         else:
             if message.from_client is False:
                 if message.injected:
