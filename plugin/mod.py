@@ -132,7 +132,6 @@ config:
                 msg = b'\x01' + msg_block.SerializeToString()
             else:
                 msg = buf[:3] + msg_block.SerializeToString()
-            self.SaveSettings()
 
         return modify, drop, msg, inject, inject_msg
 
@@ -404,6 +403,7 @@ config:
         self.safe['main_character_id'] = data.main_character_id
         self.safe['characters'] = data.characters
         self._fill_characters(data)
+        self.SaveSettings()  # _fill_characters 可能新增默认皮肤映射，需持久化
         return modify, False, data
 
     def _res_login(self, msg_block):
@@ -639,6 +639,7 @@ config:
         # 处理随机角色皮肤
         data.ClearField('random_character')
         json_format.ParseDict(self.settings['config']['random_character'],data.random_character)
+        self.SaveSettings()  # _fill_characters 可能新增默认皮肤映射，需持久化
         return modify, False, data
 
     def _res_fetch_server_settings(self, msg_block):
