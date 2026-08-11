@@ -28,6 +28,8 @@ uv run python addons.py   # 仅启动 mitmproxy（不设置系统代理）
 - 依赖变更改 `pyproject.toml`，不要重建 requirements.txt；版本策略：只设下限不设上限（mitmproxy>=12.2.3 / protobuf>=7.35.1，Python >=3.12，2026-08-10 随上游升到最新），破坏性大版本更新时再适配
 - 上游代理逻辑集中在 `resolve_upstream()`，不要绕开它直接改 mode
 - start.sh 改动注意：`unset VIRTUAL_ENV`（避免 venv 激活冲突）、networksetup 失败要容忍（`|| true` 或提示）
+- **SaveSettings 纪律**：只有**改配置**（self.settings）的 handler 才 SaveSettings；只改 message 内容的高频路径（Notify 类）禁止触发写盘（2026-08-11 性能优化后约定，防回归）
+- **serve-pac.py 只 serve majsoul.pac 单文件**，禁止改回 SimpleHTTPRequestHandler 整目录暴露（会泄漏 settings.yaml token）
 
 ## 技能包（.workbuddy/skills/）
 
