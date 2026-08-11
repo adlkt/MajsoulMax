@@ -4,14 +4,28 @@
 （__init__ 会读写配置文件，测试环境不应触发磁盘写入）。
 """
 import pytest
+from ruamel.yaml import YAML
 
 from plugin.mod import mod
 
 
 @pytest.fixture
-def pure_mod():
-    """绕过 __init__（会 LoadSettings/SaveSettings 读写配置），仅取方法。"""
-    return mod.__new__(mod)
+def pure_mod(monkeypatch, tmp_path):
+    """绕过 __init__（会 LoadSettings/SaveSettings 读写配置），仅取方法。
+
+    SaveSettings 重定向到 tmp_path，绝不触碰真实 config/settings.mod.yaml。
+    """
+    m = mod.__new__(mod)
+    m.yaml = YAML()
+    m.settings = {"config": {}}
+    target = tmp_path / "settings.mod.yaml"
+
+    def fake_save():
+        with open(target, "w", encoding="utf-8") as f:
+            m.yaml.dump(m.settings, f)
+
+    monkeypatch.setattr(m, "SaveSettings", fake_save)
+    return m
 
 
 class TestGetZoneId:
@@ -71,3 +85,26 @@ class TestEncodeAccountId2:
     ])
     def test_known_mappings(self, pure_mod, raw, expected):
         assert pure_mod.encode_account_id2(raw) == expected
+
+
+class TestSaveSettings:
+    """SaveSettings 备份逻辑：写盘前必须保留旧文件为 .bak（防配置丢失）。"""
+
+    def test_creates_backup_before_overwrite(self, monkeypatch, tmp_path):
+        import plugin.mod as mod_module
+
+        m = mod_module.mod.__new__(mod_module.mod)
+        m.yaml = YAML()
+        m.settings = {"config": {"character": 200001}}
+        config_dir = tmp_path / "config"
+        config_dir.mkdir(exist_ok=True)
+        target = config_dir / "settings.mod.yaml"
+        target.write_text("old-content", encoding="utf-8")
+
+        monkeypatch.setattr(mod_module, "BASE_DIR", tmp_path)
+        m.SaveSettings()
+
+        bak = config_dir / "settings.mod.yaml.bak"
+        assert bak.exists(), "写盘前必须生成 .bak 备份"
+        assert bak.read_text(encoding="utf-8") == "old-content"
+        assert target.exists()

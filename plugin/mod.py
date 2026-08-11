@@ -67,7 +67,16 @@ config:
         self.SaveSettings()
 
     def SaveSettings(self):
-        with open(BASE_DIR / 'config' / 'settings.mod.yaml', 'w', encoding='utf-8') as f:
+        # 写盘前备份当前文件：任何原因导致配置被覆盖/损坏时都有 .bak 兜底可恢复
+        target = BASE_DIR / 'config' / 'settings.mod.yaml'
+        try:
+            if target.exists():
+                bak = target.with_suffix('.yaml.bak')
+                import shutil
+                shutil.copy2(target, bak)
+        except OSError:
+            pass
+        with open(target, 'w', encoding='utf-8') as f:
             self.yaml.dump(self.settings, f)
 
     def load_max_data(self):
