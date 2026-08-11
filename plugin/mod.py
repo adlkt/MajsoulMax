@@ -1,10 +1,13 @@
 import liqi_new
 import random
+from pathlib import Path
 from ruamel.yaml import YAML
 from loguru import logger
 from struct import unpack
 from proto import liqi_pb2, basic_pb2
 from google.protobuf import json_format
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 
@@ -50,7 +53,7 @@ config:
   safe_mode: false  # 地铁模式，将除自己外所有人变成一姬初始形象，防止被误认为玩黄油。电脑形象请打开“游戏设置-偏好-电脑形象-一姬的初始形象”选项。
 ''')
         try:
-            with open('./config/settings.mod.yaml', 'r', encoding='utf-8') as f:
+            with open(BASE_DIR / 'config' / 'settings.mod.yaml', 'r', encoding='utf-8') as f:
                 temp = YAML()
                 localyaml = temp.load(f)
                 for i in self.settings.keys():
@@ -58,18 +61,18 @@ config:
                         for j in self.settings[i]:
                             if j in localyaml[i].keys():
                                 self.settings[i][j] = localyaml[i][j]
-        except:
+        except FileNotFoundError:
             logger.warning(
                 '未检测到mod配置文件，已生成默认配置，如需自定义mod配置请手动修改 ./config/settings.mod.yaml')
         self.load_max_data()
         self.SaveSettings()
 
     def SaveSettings(self):
-        with open('./config/settings.mod.yaml', 'w', encoding='utf-8') as f:
+        with open(BASE_DIR / 'config' / 'settings.mod.yaml', 'w', encoding='utf-8') as f:
             self.yaml.dump(self.settings, f)
 
     def load_max_data(self):
-        with open('./config/max_data.yaml', 'r', encoding='utf-8') as f:
+        with open(BASE_DIR / 'config' / 'max_data.yaml', 'r', encoding='utf-8') as f:
             yaml = YAML()
             self.max_data = yaml.load(f)
 
@@ -219,8 +222,7 @@ config:
                             elif view.type == 1 and view.item_id != 0:
                                 view.ClearField('item_id')
 
-                        views = json_format.MessageToDict(
-                            data, including_default_value_fields=True, preserving_proto_field_name=True)
+                        views = liqi_new.to_dict(data)
                         self.settings['config']['views'][views['save_index']
                                                          ] = views['views']
                         if views['is_use'] == 1:
@@ -247,7 +249,7 @@ config:
                         data = liqi_pb2.ReqRandomCharacter()
                         data.ParseFromString(msg_block.data)
                         self.settings['config']['random_character']['enabled'] = data.enabled
-                        self.settings['config']['random_character']['pool'] = json_format.MessageToDict(data, including_default_value_fields=True, preserving_proto_field_name=True)['pool']
+                        self.settings['config']['random_character']['pool'] = liqi_new.to_dict(data)['pool']
                         self.SaveSettings()
 
 

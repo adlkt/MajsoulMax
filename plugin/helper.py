@@ -1,9 +1,12 @@
 from ruamel.yaml import YAML
 from loguru import logger
 from base64 import b64decode
+from pathlib import Path
 import requests
-from google.protobuf.json_format import MessageToDict
 from proto import liqi_pb2 as pb
+import liqi_new
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 
 class helper:
@@ -50,15 +53,15 @@ config:
 ''')
 
         try:
-            with open('./config/settings.helper.yaml', 'r', encoding='utf8') as f:
+            with open(BASE_DIR / 'config' / 'settings.helper.yaml', 'r', encoding='utf8') as f:
                 self.settings.update(self.yaml.load(f))
-        except:
+        except FileNotFoundError:
             logger.warning(
                 '未检测到helper配置文件，已生成默认配置，如需自定义helper配置请手动修改 ./config/settings.helper.yaml')
             self.SaveSettings()
 
     def SaveSettings(self):
-        with open('./config/settings.helper.yaml', 'w', encoding='utf8') as f:
+        with open(BASE_DIR / 'config' / 'settings.helper.yaml', 'w', encoding='utf8') as f:
             self.yaml.dump(self.settings, f)
 
     def main(self, result):
@@ -81,8 +84,7 @@ config:
                         b64 = b64decode(item['data'])
                         action_proto_obj = getattr(
                             pb, item['name']).FromString(b64)
-                        action_dict_obj = MessageToDict(
-                            action_proto_obj, preserving_proto_field_name=True, including_default_value_fields=True)
+                        action_dict_obj = liqi_new.to_dict(action_proto_obj)
                         if item['name'] == 'ActionNewRound':
                             # 这里也是假md5，理由同上
                             action_dict_obj['md5'] = action_dict_obj['sha256'][:32]

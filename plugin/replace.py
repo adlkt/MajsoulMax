@@ -1,5 +1,8 @@
+from pathlib import Path
 from ruamel.yaml import YAML
 from loguru import logger
+
+BASE_DIR = Path(__file__).resolve().parent.parent
 
 class replace:
     def __init__(self):
@@ -14,15 +17,15 @@ config:
   lq: []
 ''')
         try:
-            with open('./config/settings.replace.yaml', 'r', encoding='utf8') as f:
+            with open(BASE_DIR / 'config' / 'settings.replace.yaml', 'r', encoding='utf8') as f:
                 self.settings.update(self.yaml.load(f))
-        except:
+        except FileNotFoundError:
             logger.warning(
                 '未检测到replace配置文件，已生成默认配置，如需自定义replace配置请手动修改 ./config/settings.replace.yaml')
             self.SaveSettings()
 
     def SaveSettings(self):
-        with open('./config/settings.replace.yaml', 'w', encoding='utf8') as f:
+        with open(BASE_DIR / 'config' / 'settings.replace.yaml', 'w', encoding='utf8') as f:
             self.yaml.dump(self.settings, f)
 
     def main(self, request):

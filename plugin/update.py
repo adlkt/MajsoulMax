@@ -1,10 +1,11 @@
-import os
 import requests
 import json
+from pathlib import Path
 from loguru import logger
 from google.protobuf import descriptor_pb2
 from google.protobuf import descriptor_pool
 
+BASE_DIR = Path(__file__).resolve().parent.parent
 LIQI_FILES = {"max_data.yaml": "config", "liqi.desc": "proto"}
 
 def _auth_headers(token: str):
@@ -53,7 +54,7 @@ def _download_liqi_assets(release: dict, token: str):
 
 def _generate_liqi_json():
     fds = descriptor_pb2.FileDescriptorSet()
-    with open("./proto/liqi.desc", "rb") as f:
+    with open(BASE_DIR / "proto" / "liqi.desc", "rb") as f:
         fds.ParseFromString(f.read())
 
     pool = descriptor_pool.DescriptorPool()
@@ -75,7 +76,7 @@ def _generate_liqi_json():
                     "req": method.input_type,
                     "resp": method.output_type
                 }
-    with open('./proto/liqi.json', 'w') as f:
+    with open(BASE_DIR / 'proto' / 'liqi.json', 'w') as f:
         json.dump(rpc_map, f,  separators=(',', ':'),indent =None)
 
 
@@ -98,7 +99,7 @@ github api额度用完，无法更新liqi文件！请尝试以下方法：\n
     else:
         blobs = _download_liqi_assets(liqi, token)
         for name in LIQI_FILES:
-            with open(os.path.join(LIQI_FILES[name], name), "wb") as f:
+            with open(BASE_DIR / LIQI_FILES[name] / name, "wb") as f:
                 f.write(blobs[name])
         _generate_liqi_json()
         logger.success(f"liqi文件更新成功：{new_version}")

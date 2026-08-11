@@ -1,0 +1,15 @@
+[project]
+name = "majsoul-max"
+version = "2026.07.07"
+description = "雀魂 MAX —— 解锁全角色、皮肤、装扮等"
+requires-python = ">=3.12"
+dependencies = [
+    "mitmproxy>=12.2.3",
+    "protobuf>=7.35.1",
+    "requests>=2.34.2",
+    "ruamel.yaml>=0.19.1",
+    "loguru>=0.7.3",
+]
+
+[tool.uv]
+package = false
