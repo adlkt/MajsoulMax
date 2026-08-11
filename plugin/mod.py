@@ -98,6 +98,9 @@ config:
                     if data.update.HasField('character'):
                         drop = True
                 case '.lq.NotifyRoomPlayerUpdate':
+                    if not self.safe.get('account_id'):
+                        # 未登录（safe 未填充）前收到房间更新，无法识别自己，跳过修改
+                        return modify, drop, msg, inject, inject_msg
                     modify = True
                     data = liqi_pb2.NotifyRoomPlayerUpdate()
                     data.ParseFromString(msg_block.data)
@@ -114,14 +117,6 @@ config:
                             p.character.charid=200001
                             p.character.skin=400101
                             p.avatar_id= 400101
-                    # for p in data.update_list:
-                    #     if p.account_id == self.safe['account_id']:
-                    #         p.avatar_id = self.settings['config']['characters'][self.settings['config']['character']]
-                    #         if self.settings['config']['nickname'] != '':
-                    #             p.nickname = self.settings['config']['nickname']
-                    #         p.title = self.settings['config']['title']
-                    #     if self.settings['config']['show_server']:
-                    #         p.nickname =self.get_zone_id(p.account_id)+p.nickname
                 case '.lq.NotifyGameFinishRewardV2':
                     modify = True
                     data = liqi_pb2.NotifyGameFinishRewardV2()
@@ -207,7 +202,6 @@ config:
                         fake = True
                         data = liqi_pb2.ReqSetLoadingImage()
                         data.ParseFromString(msg_block.data)
-                        # self.safe['loading_image'] = []
                         self.settings['config']['loading_image'] = list(
                             data.images)
                         self.SaveSettings()
@@ -272,9 +266,6 @@ config:
                         data.ParseFromString(msg_block.data)
                         self.safe['main_character_id'] = data.main_character_id
                         self.safe['characters'] = data.characters
-                        # self.safe['skins'] = data.skins
-                        # self.safe['character_sort'] = data.character_sort
-                        # START
                         data.ClearField('characters')
                         character_keys = self.settings['config']['characters'].keys(
                         )
@@ -397,7 +388,6 @@ config:
                                 p.ClearField('views')
                                 for view in self.settings['config']['views'][self.settings['config']['views_index']]:
                                     view_slot = p.views.add()
-                                    #json_format.ParseDict(view, view_slot)
                                     view_slot.slot = view['slot']
                                     if view['type'] == 0: # 非随机装扮
                                         view_slot.item_id = view['item_id']
@@ -439,21 +429,10 @@ config:
                             data.account.loading_image.extend(
                                 self.settings['config']['loading_image'])
                             data.account.verified = self.settings['config']['verified']
-                        # if self.settings['config']['show_server']:
-                        #     match self.get_zone_id(data.account.account_id):
-                        #         case 0:
-                        #             data.account.nickname = '[C' + b'\xef\xbb\xbf'.decode('utf-8') +'N]'+data.account.nickname
-                        #         case 1:
-                        #             data.account.nickname = '[JP]'+data.account.nickname
-                        #         case 3:
-                        #             data.account.nickname = '[EN]'+data.account.nickname
-                        #         case _:
-                        #             data.account.nickname = '[??]'+data.account.nickname
                     case '.lq.Lobby.fetchTitleList':  # 获取称号列表
                         modify = True
                         data = liqi_pb2.ResTitleList()
                         data.ParseFromString(msg_block.data)
-                        # self.safe['title_list'] = data.title_list
                         data.ClearField('title_list')
                         data.title_list.extend(self.max_data['title'])
                     case '.lq.Lobby.fetchRoom':  # 获取友人房信息
@@ -644,7 +623,7 @@ config:
                                     account.avatar_id = account.character.skin = item['skin_id']
                                 else:
                                     account.character.charid = self.settings['config']['character']
-                                    account.avatar_id = p.character.skin = self.settings['config']['characters'][self.settings['config']['character']]
+                                    account.avatar_id = account.character.skin = self.settings['config']['characters'][self.settings['config']['character']]
 
                                 if self.settings['config']['emoji']:
                                     account.character.extra_emoji.extend(
@@ -655,7 +634,6 @@ config:
                                 account.ClearField('views')
                                 for view in self.settings['config']['views'][self.settings['config']['views_index']]:
                                     view_slot = account.views.add()
-                                    #json_format.ParseDict(view, view_slot)
                                     view_slot.slot = view['slot']
                                     if view['type'] == 0: # 非随机装扮
                                         view_slot.item_id = view['item_id']
