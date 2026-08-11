@@ -119,7 +119,7 @@ config:
                 assert (not message.from_client)
                 assert (len(msg_block.method_name) == 0)
                 assert (msg_id in liqi_proto.res_type)
-                method_name, _liqi_pb2_res = liqi_proto.res_type[msg_id]
+                method_name, _ = liqi_proto.res_type[msg_id]
                 handler_name = _RES_HANDLERS.get(method_name)
                 if handler_name is not None:
                     handler = getattr(self, handler_name)
@@ -161,7 +161,7 @@ config:
                 p.title = self.settings['config']['title']
 
             if self.settings['config']['show_server']:
-                p.nickname =self.get_zone_id(p.account_id)+p.nickname
+                p.nickname = self._prepend_zone(p.account_id, p.nickname)
             if self.settings['config']['safe_mode']:
                 p.character.charid=200001
                 p.character.skin=400101
@@ -189,7 +189,7 @@ config:
         data = liqi_pb2.NotifyCustomContestSystemMsg()
         data.ParseFromString(msg_block.data)
         for p in data.game_start.players:
-            p.nickname =self.get_zone_id(p.account_id)+p.nickname
+            p.nickname = self._prepend_zone(p.account_id, p.nickname)
         return modify, False, data
 
     def _notify_announcement_update(self, msg_block):
@@ -317,6 +317,14 @@ config:
 
     # ============ 共享 helper（fetchCharacterInfo / fetchInfo 等复用） ============
 
+    def _default_skin_id(self, character_id: int) -> int:
+        """角色 id → 默认皮肤 id（如 200001 → 400101）。"""
+        return int('40' + str(character_id)[4:] + '01')
+
+    def _prepend_zone(self, account_id: int, nickname: str) -> str:
+        """昵称前加服务器标识（[CN]/[JP]/[EN]/[??]）。"""
+        return self.get_zone_id(account_id) + nickname
+
     def _fill_characters(self, target):
         """补全角色数据：注入全部角色/皮肤/称号/结局。
 
@@ -334,8 +342,7 @@ config:
             character.level = 5
             character.rewarded_level.extend([1, 2, 3, 4, 5])
             if c not in character_keys:
-                self.settings['config']['characters'][c] = int(
-                    '40'+str(c)[4:]+'01')
+                self.settings['config']['characters'][c] = self._default_skin_id(c)
             character.skin = self.settings['config']['characters'][c]
             if self.settings['config']['emoji']:
                 character.extra_emoji.extend(
@@ -412,8 +419,8 @@ config:
             data.account.avatar_id = self.settings['config'][
                 'characters'][self.settings['config']['character']]
         else:
-            data.account.avatar_id = int(
-                '40'+str(self.settings['config']['character'])[4:]+'01')
+            data.account.avatar_id = self._default_skin_id(
+                self.settings['config']['character'])
         for view in self.settings['config']['views'][self.settings['config']['views_index']]:
             if view['slot'] == 5:
                 data.account.avatar_frame = view['item_id']
@@ -453,7 +460,7 @@ config:
                     json_format.ParseDict(view, view_slot)
                 p.verified = self.settings['config']['verified']
             if self.settings['config']['show_server']:
-                p.nickname =self.get_zone_id(p.account_id)+p.nickname
+                p.nickname = self._prepend_zone(p.account_id, p.nickname)
         return modify, False, data
 
     def _res_auth_game(self, msg_block):
@@ -503,7 +510,7 @@ config:
                 p.verified = self.settings['config']['verified']
 
             if self.settings['config']['show_server']:
-                p.nickname =self.get_zone_id(p.account_id)+p.nickname
+                p.nickname = self._prepend_zone(p.account_id, p.nickname)
             if self.settings['config']['safe_mode']:
                 p.character.charid=200001
                 p.character.skin=400101
@@ -573,7 +580,7 @@ config:
                     json_format.ParseDict(view, view_slot)
                 p.verified = self.settings['config']['verified']
             if self.settings['config']['show_server']:
-                p.nickname =self.get_zone_id(p.account_id)+p.nickname
+                p.nickname = self._prepend_zone(p.account_id, p.nickname)
         return modify, False, data
 
     def _res_fetch_bag_info(self, msg_block):
@@ -594,11 +601,11 @@ config:
         modify = True
         data = liqi_pb2.ResAnnouncement()
         data.ParseFromString(msg_block.data)
-        MyAnnouncement = liqi_pb2.Announcement()
-        MyAnnouncement.title = '雀魂MAX载入成功'
-        MyAnnouncement.id = 666666
-        MyAnnouncement.header_image = 'internal://2.jpg'
-        MyAnnouncement.content = f'<color=#f9963b>作者：Avenshy        版本：{self.version}</color>\n\
+        banner = liqi_pb2.Announcement()
+        banner.title = '雀魂MAX载入成功'
+        banner.id = 666666
+        banner.header_image = 'internal://2.jpg'
+        banner.content = f'<color=#f9963b>作者：Avenshy        版本：{self.version}</color>\n\
 <b>本工具完全免费、开源，如果您为此付费，说明您被骗了！</b>\n\
 <b>本工具仅供学习交流，请在下载后24小时内删除，不得用于商业用途，否则后果自负！</b>\n\
 <b>本工具有可能导致账号被封禁，给猫粮充钱才是正道！</b>\n\n\
@@ -608,7 +615,7 @@ config:
 <href=https://afdian.net/a/Avenshy>爱发电，支持支付宝、微信</href>\n\
 <href=https://patreon.com/Avenshy>Patreon，支持Paypal、信用卡</href>\n\
 <color=#f9963b>再次重申：脚本完全免费使用，没有收费功能，请喝咖啡完全自愿，作者非常感谢您！</color>'
-        data.announcements.insert(0, MyAnnouncement)
+        data.announcements.insert(0, banner)
         return modify, False, data
 
     def _res_fetch_info(self, msg_block):
@@ -697,7 +704,7 @@ config:
                 account.character.skin=400101
                 account.avatar_id= 400101
             if self.settings['config']['show_server']:
-                account.nickname =self.get_zone_id(account.account_id)+account.nickname
+                account.nickname = self._prepend_zone(account.account_id, account.nickname)
 
             result += f'{self.get_zone_id(account.account_id)}{account.nickname}\n\
 账号id: {account.account_id}   加好友id: {self.encode_account_id2(account.account_id)}\n\
