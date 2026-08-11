@@ -34,7 +34,8 @@ uv run python addons.py   # 仅启动 mitmproxy（不设置系统代理）
 项目已装 addyosmani/agent-skills 全量 24 技能（MIT），指导 agent 按资深工程师工作流干活，详见 `.workbuddy/README.md`。
 
 - **开工前**：先读 `.workbuddy/skills/using-agent-skills/SKILL.md` 把任务映射到正确技能；本文件是 context-engineering 的核心输入
-- **改逻辑/修 bug 前**：读 `test-driven-development`，本项目目前零测试，新逻辑至少补解析层测试（liqi_new.py 的 to_dict 兼容层是好样例）
+- **测试**：`uv run pytest` 跑全量（tests/，27 用例：liqi_new 解析层 + mod 纯函数）；测试命令是 `uv run pytest`（pyproject.toml 已配 testpaths/addopts）
+- **改逻辑/修 bug 前**：读 `test-driven-development`；解析层改动必须补 `tests/test_liqi_new.py`（to_dict 兼容 + parse Req/Res/Notify 闭环是好样例），mod 纯函数改动补 `tests/test_mod_utils.py`（用 `mod.__new__` 绕过 __init__ 避免写配置文件）
 - **改 addons.py 核心链路/代理逻辑前**：读 `doubt-driven-development` + `source-driven-development`（mitmproxy/protobuf API 变动大，先查官方文档再动手）
 - **提交前**：读 `git-workflow-and-versioning`（原子提交 + 变更规模）+ `code-review-and-quality`（五轴自审）
 - **排障时**：按 `debugging-and-error-recovery` 五步法（复现→定位→缩小→修复→防护），本项目历史坑见 `.workbuddy/memory/`
