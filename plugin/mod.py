@@ -610,21 +610,22 @@ config:
         modify = True
         data = liqi_pb2.ResAnnouncement()
         data.ParseFromString(msg_block.data)
-        banner = liqi_pb2.Announcement()
-        banner.title = '雀魂MAX载入成功'
-        banner.id = 666666
-        banner.header_image = 'internal://2.jpg'
-        banner.content = f'<color=#f9963b>作者：Avenshy        版本：{self.version}</color>\n\
-<b>本工具完全免费、开源，如果您为此付费，说明您被骗了！</b>\n\
-<b>本工具仅供学习交流，请在下载后24小时内删除，不得用于商业用途，否则后果自负！</b>\n\
-<b>本工具有可能导致账号被封禁，给猫粮充钱才是正道！</b>\n\n\
-<color=#f9963b>开源地址：</color>\n\
-<href=https://github.com/Avenshy/MajsoulMax>https://github.com/Avenshy/MajsoulMax</href>\n\n\
-<color=#f9963b>请作者喝咖啡：</color>\n\
-<href=https://afdian.net/a/Avenshy>爱发电，支持支付宝、微信</href>\n\
-<href=https://patreon.com/Avenshy>Patreon，支持Paypal、信用卡</href>\n\
-<color=#f9963b>再次重申：脚本完全免费使用，没有收费功能，请喝咖啡完全自愿，作者非常感谢您！</color>'
-        data.announcements.insert(0, banner)
+        # ===== 已注释：注入自定义公告横幅（2026-08-11）=====
+        # banner = liqi_pb2.Announcement()
+        # banner.title = '雀魂MAX载入成功'
+        # banner.id = 666666
+        # banner.header_image = 'internal://2.jpg'
+        # banner.content = f'<color=#f9963b>作者：Avenshy        版本：{self.version}</color>\n\
+# <b>本工具完全免费、开源，如果您为此付费，说明您被骗了！</b>\n\
+# <b>本工具仅供学习交流，请在下载后24小时内删除，不得用于商业用途，否则后果自负！</b>\n\
+# <b>本工具有可能导致账号被封禁，给猫粮充钱才是正道！</b>\n\n\
+# <color=#f9963b>开源地址：</color>\n\
+# <href=https://github.com/Avenshy/MajsoulMax>https://github.com/Avenshy/MajsoulMax</href>\n\n\
+# <color=#f9963b>请作者喝咖啡：</color>\n\
+# <href=https://afdian.net/a/Avenshy>爱发电，支持支付宝、微信</href>\n\
+# <href=https://patreon.com/Avenshy>Patreon，支持Paypal、信用卡</href>\n\
+# <color=#f9963b>再次重申：脚本完全免费使用，没有收费功能，请喝咖啡完全自愿，作者非常感谢您！</color>'
+        # data.announcements.insert(0, banner)
         return modify, False, data
 
     def _res_fetch_info(self, msg_block):
