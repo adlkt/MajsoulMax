@@ -4,3 +4,6 @@ __pycache__
 .vscode
 .agents
 .pytest_cache
+# SaveSettings 自动备份产物，不提交
+*.bak
+*.user-backup
