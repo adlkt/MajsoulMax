@@ -16,7 +16,7 @@ config:
     200012: 401203
     200013: 401301
     200014: 401401
-    200015: 401502
+    200015: 401501
     200016: 401603
     200017: 401701
     200018: 401801
@@ -49,19 +49,19 @@ config:
     200045: 404501
     200046: 404601
     200047: 404701
-    200048: 404805
+    200048: 404801
     200049: 404901
     200050: 405002
     200051: 405102
     200052: 405202
-    200053: 405303
+    200053: 405301
     200054: 405401
     200055: 405501
     200056: 405601
     200057: 405701
     200058: 405801
     200059: 405901
-    200060: 406004
+    200060: 406001
     200061: 406102
     200062: 406201
     200063: 406301
@@ -108,7 +108,7 @@ config:
     20000106: 40010601
     20000107: 40010702
     20000108: 40010801
-    20000109: 40010901
+    20000109: 40010903
     20000110: 40011001
     20000111: 40011101
     20000112: 40011203
@@ -129,6 +129,8 @@ config:
   - 200050
   - 20000122
   - 20000123
+  - 200041
+  - 20000109
   bianjietishi: false # 强制启用便捷提示，用于部分场没有宝牌指示、和牌指示等
   title: 600094 # 当前使用的称号
   loading_image:    # 加载CG
@@ -248,85 +250,169 @@ config:
   - 30740002
   - 30740001
   emoji: false # 不建议开启，用于解锁角色全部emoji，如果你本身角色没有额外表情，在对局中却发送额外表情，这种行为相当于自爆卡车
-  views: # 各装扮页的装扮
+  views: # 各装扮页的装扮（新格式：{index: {name, values}}，老 list 格式启动时自动迁移）
     0:
-    - slot: 1
-      item_id: 308011
-      type: 0
-      item_id_list: []
-    - slot: 2
-      item_id: 308012
-      type: 0
-      item_id_list: []
-    - slot: 4
-      item_id: 305050
-      type: 0
-      item_id_list: []
-    - slot: 6
-      item_id: 308014
-      type: 0
-      item_id_list: []
-    - slot: 7
-      item_id: 308015
-      type: 0
-      item_id_list: []
-    - slot: 8
-      item_id: 30700008
-      type: 0
-      item_id_list: []
-    - slot: 10
-      item_id: 305901
-      type: 0
-      item_id_list: []
-    - item_id: 308013
-      slot: 0
-      type: 0
-      item_id_list: []
+      name: akagi
+      values:
+      - slot: 1
+        item_id: 308011
+        type: 0
+        item_id_list: []
+      - slot: 2
+        item_id: 308012
+        type: 0
+        item_id_list: []
+      - slot: 4
+        item_id: 305050
+        type: 0
+        item_id_list: []
+      - slot: 6
+        item_id: 308014
+        type: 0
+        item_id_list: []
+      - slot: 7
+        item_id: 308015
+        type: 0
+        item_id_list: []
+      - slot: 8
+        item_id: 30700008
+        type: 0
+        item_id_list: []
+      - slot: 10
+        item_id: 305901
+        type: 0
+        item_id_list: []
+      - item_id: 308013
+        slot: 0
+        type: 0
+        item_id_list: []
     1:
-    - slot: 1
-      item_id: 308052
-      type: 0
-      item_id_list: []
-    - slot: 2
-      item_id: 308053
-      type: 0
-      item_id_list: []
-    - slot: 4
-      item_id: 30505007
-      type: 0
-      item_id_list: []
-    - slot: 5
-      item_id: 308057
-      type: 0
-      item_id_list: []
-    - slot: 6
-      item_id: 308055
-      type: 0
-      item_id_list: []
-    - slot: 7
-      item_id: 308056
-      type: 0
-      item_id_list: []
-    - slot: 8
-      item_id: 307008
-      type: 0
-      item_id_list: []
-    - slot: 10
-      item_id: 30590001
-      type: 0
-      item_id_list: []
-    - item_id: 308054
-      slot: 0
-      type: 0
-      item_id_list: []
-    2: []
-    3: []
-    4: []
-    5: []
-    6: []
-    7: []
-    8: []
-    9: []
+      name: sao
+      values:
+      - slot: 1
+        item_id: 308052
+        type: 0
+        item_id_list: []
+      - slot: 2
+        item_id: 308053
+        type: 0
+        item_id_list: []
+      - slot: 4
+        item_id: 30505007
+        type: 0
+        item_id_list: []
+      - slot: 5
+        item_id: 308057
+        type: 0
+        item_id_list: []
+      - slot: 6
+        item_id: 308055
+        type: 0
+        item_id_list: []
+      - slot: 7
+        item_id: 308056
+        type: 0
+        item_id_list: []
+      - slot: 8
+        item_id: 307008
+        type: 0
+        item_id_list: []
+      - slot: 10
+        item_id: 305902
+        type: 0
+        item_id_list: []
+      - item_id: 308054
+        slot: 0
+        type: 0
+        item_id_list: []
+    2:
+      name: kakeguru
+      values:
+      - slot: 1
+        item_id: 308006
+        type: 0
+        item_id_list: []
+      - slot: 2
+        item_id: 308007
+        type: 0
+        item_id_list: []
+      - slot: 4
+        item_id: 306201
+        type: 0
+        item_id_list: []
+      - slot: 6
+        item_id: 308009
+        type: 0
+        item_id_list: []
+      - slot: 7
+        item_id: 308010
+        type: 0
+        item_id_list: []
+      - slot: 8
+        item_id: 30700003
+        type: 0
+        item_id_list: []
+      - slot: 10
+        item_id: 305901
+        type: 0
+        item_id_list: []
+      - item_id: 308008
+        slot: 0
+        type: 0
+        item_id_list: []
+    3:
+      name: fsn
+      values:
+      - slot: 1
+        item_id: 308041
+        type: 0
+        item_id_list: []
+      - slot: 2
+        item_id: 308042
+        type: 0
+        item_id_list: []
+      - slot: 4
+        item_id: 305026
+        type: 0
+        item_id_list: []
+      - slot: 6
+        item_id: 308044
+        type: 0
+        item_id_list: []
+      - slot: 7
+        item_id: 308045
+        type: 0
+        item_id_list: []
+      - slot: 8
+        item_id: 30700005
+        type: 0
+        item_id_list: []
+      - slot: 10
+        item_id: 30590001
+        type: 0
+        item_id_list: []
+      - item_id: 308043
+        slot: 0
+        type: 0
+        item_id_list: []
+    4:
+      name: ''
+      values: []
+    5:
+      name: ''
+      values: []
+    6:
+      name: ''
+      values: []
+    7:
+      name: ''
+      values: []
+    8:
+      name: ''
+      values: []
+    9:
+      name: ''
+      values: []
   views_index: 0 # 正在使用的装扮页
   show_server: false # 显示其他玩家所在服务器
   verified: 0 # 标识设置，0为无标识，1为主播标识，2为Pro标识，显示在名字后面
