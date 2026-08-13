@@ -31,17 +31,17 @@ config:
   title: 0  # 当前使用的称号
   loading_image: [] # 加载CG
   emoji: false # 不建议开启，用于解锁角色全部emoji，如果你本身角色没有额外表情，在对局中却发送额外表情，这种行为相当于自爆卡车
-  views: # 各装扮页的装扮
-    0: []
-    1: []
-    2: []
-    3: []
-    4: []
-    5: []
-    6: []
-    7: []
-    8: []
-    9: []
+  views: # 各装扮页的装扮（新格式：{index: {name, values}}，老 list 格式启动时自动迁移）
+    0: {name: '', values: []}
+    1: {name: '', values: []}
+    2: {name: '', values: []}
+    3: {name: '', values: []}
+    4: {name: '', values: []}
+    5: {name: '', values: []}
+    6: {name: '', values: []}
+    7: {name: '', values: []}
+    8: {name: '', values: []}
+    9: {name: '', values: []}
   views_index: 0 # 正在使用的装扮页
   show_server: true # 显示其他玩家所在服务器
   verified: 0 # 标识设置，0为无标识，1为主播标识，2为Pro标识，显示在名字后面
@@ -63,19 +63,32 @@ config:
         except FileNotFoundError:
             logger.warning(
                 '未检测到mod配置文件，已生成默认配置，如需自定义mod配置请手动修改 ./config/settings.mod.yaml')
+        self._migrate_views_format()
         self.load_max_data()
         self.SaveSettings()
 
+    def _migrate_views_format(self):
+        """迁移 views 结构：老格式 {i: [slots]} → 新格式 {i: {name, values}}，并补齐缺失装扮页。
+
+        - 老格式不存 name，迁移时补空串
+        - 新格式加载时保留已存 name
+        - 缺失的装扮页（0-9 之外或未定义）补空结构，防止 views_index 越界 KeyError
+        """
+        new_views = {}
+        for idx in range(10):
+            v = self.settings['config']['views'].get(idx, [])
+            if isinstance(v, dict):
+                new_views[idx] = {
+                    'name': v.get('name', ''),
+                    'values': v.get('values', []),
+                }
+            else:
+                new_views[idx] = {'name': '', 'values': list(v)}
+        self.settings['config']['views'] = new_views
+
     def SaveSettings(self):
-        # 写盘前备份当前文件：任何原因导致配置被覆盖/损坏时都有 .bak 兜底可恢复
+        # 直接写盘（2026-08-13 起不再生成 .bak，用户明确要求）
         target = BASE_DIR / 'config' / 'settings.mod.yaml'
-        try:
-            if target.exists():
-                bak = target.with_suffix('.yaml.bak')
-                import shutil
-                shutil.copy2(target, bak)
-        except OSError:
-            pass
         with open(target, 'w', encoding='utf-8') as f:
             self.yaml.dump(self.settings, f)
 
@@ -283,8 +296,10 @@ config:
                 view.ClearField('item_id')
 
         views = liqi_new.to_dict(data)
-        self.settings['config']['views'][views['save_index']
-                                         ] = views['views']
+        self.settings['config']['views'][views['save_index']] = {
+            'name': views.get('name', ''),
+            'values': views['views'],
+        }
         if views['is_use'] == 1:
             self.settings['config']['views_index'] = views['save_index']
         self.SaveSettings()
@@ -390,13 +405,14 @@ config:
             item.stack = 1
 
     def _fill_common_views(self, target):
-        """补全装扮页：写入 views_index 与各装扮页配置。"""
+        """补全装扮页：写入 views_index 与各装扮页配置（含分组名 name）。"""
         target.use = self.settings['config']['views_index']
         target.ClearField('views')
         for i, view in self.settings['config']['views'].items():
             views = target.views.add()
             json_format.ParseDict(
-                {'index': i, 'values': view}, views)
+                {'index': i, 'name': view.get('name', ''),
+                 'values': view['values']}, views)
 
     def _fill_title_list(self, target):
         """补全称号列表。"""
@@ -430,7 +446,7 @@ config:
         else:
             data.account.avatar_id = self._default_skin_id(
                 self.settings['config']['character'])
-        for view in self.settings['config']['views'][self.settings['config']['views_index']]:
+        for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
             if view['slot'] == 5:
                 data.account.avatar_frame = view['item_id']
         if self.settings['config']['nickname'] != '':
@@ -464,7 +480,7 @@ config:
                     p.nickname = self.settings['config']['nickname']
                 p.title = self.settings['config']['title']
                 p.character.ClearField('views')
-                for view in self.settings['config']['views'][self.settings['config']['views_index']]:
+                for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
                     view_slot = p.character.views.add()
                     json_format.ParseDict(view, view_slot)
                 p.verified = self.settings['config']['verified']
@@ -507,7 +523,7 @@ config:
                     p.nickname = self.settings['config']['nickname']
                 p.title = self.settings['config']['title']
                 p.ClearField('views')
-                for view in self.settings['config']['views'][self.settings['config']['views_index']]:
+                for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
                     view_slot = p.views.add()
                     view_slot.slot = view['slot']
                     if view['type'] == 0: # 非随机装扮
@@ -543,7 +559,7 @@ config:
             modify = True
             data.account.avatar_id = self.settings['config'][
                 'characters'][self.settings['config']['character']]
-            for view in self.settings['config']['views'][self.settings['config']['views_index']]:
+            for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
                 if view['slot'] == 5:
                     data.account.avatar_frame = view['item_id']
             if self.settings['config']['nickname'] != '':
@@ -584,7 +600,7 @@ config:
                     p.nickname = self.settings['config']['nickname']
                 p.title = self.settings['config']['title']
                 p.character.ClearField('views')
-                for view in self.settings['config']['views'][self.settings['config']['views_index']]:
+                for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
                     view_slot = p.character.views.add()
                     json_format.ParseDict(view, view_slot)
                 p.verified = self.settings['config']['verified']
@@ -700,7 +716,7 @@ config:
                     account.nickname = self.settings['config']['nickname']
                 account.title = self.settings['config']['title']
                 account.ClearField('views')
-                for view in self.settings['config']['views'][self.settings['config']['views_index']]:
+                for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
                     view_slot = account.views.add()
                     view_slot.slot = view['slot']
                     if view['type'] == 0: # 非随机装扮

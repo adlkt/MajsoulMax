@@ -154,6 +154,51 @@ class TestMainDispatch:
         out.ParseFromString(blk.data)
         assert list(out.title_list) == [101, 102, 103]
 
+    def test_req_save_common_views_persists_name(self, test_mod):
+        """Req.saveCommonViews：分组名 name 必须持久化到 settings。"""
+        test_mod.settings["config"]["views"] = {}
+        test_mod.contract = "abc"
+        req = liqi_pb2.ReqSaveCommonViews()
+        req.save_index = 2
+        req.is_use = 1
+        req.name = "kake"
+        v = req.views.add()
+        v.slot = 1
+        v.item_id = 308011
+        v.type = 0
+        buf = _req_buf(".lq.Lobby.saveCommonViews", req.SerializeToString())
+        test_mod.main(SimpleNamespace(content=buf, from_client=True),
+                      liqi_new.LiqiProto())
+        saved = test_mod.settings["config"]["views"][2]
+        assert saved["name"] == "kake"
+        assert saved["values"][0]["item_id"] == 308011
+        assert test_mod.settings["config"]["views_index"] == 2
+
+    def test_res_fetch_all_common_views_writes_name(self, test_mod):
+        """Res.fetchAllCommonViews：回包 views 必须带分组名 name，否则客户端显示默认数字。"""
+        test_mod.settings["config"]["views"] = {
+            0: {"name": "akag", "values": [{"slot": 1, "item_id": 308011, "type": 0}]},
+            1: {"name": "sao", "values": []},
+            2: {"name": "", "values": []},
+        }
+        test_mod.settings["config"]["views_index"] = 0
+        lp = liqi_new.LiqiProto()
+        # 登记 fetchAllCommonViews 的 res_type（addons 层职责，测试手动登记）
+        req_buf = _req_buf(".lq.Lobby.fetchAllCommonViews",
+                           liqi_pb2.ReqCommon().SerializeToString())
+        lp.parse(SimpleNamespace(content=req_buf, from_client=True))
+        buf = _res_buf(1, liqi_pb2.ResAllcommonViews().SerializeToString())
+        modify, drop, msg, inject, inject_msg = test_mod.main(
+            SimpleNamespace(content=buf, from_client=False), lp)
+        assert modify is True
+        blk = basic_pb2.BaseMessage()
+        blk.ParseFromString(msg[3:])
+        out = liqi_pb2.ResAllcommonViews()
+        out.ParseFromString(blk.data)
+        names = {v.index: v.name for v in out.views}
+        assert names == {0: "akag", 1: "sao", 2: ""}
+        assert list(out.views[0].values)[0].item_id == 308011
+
     def test_notify_account_update_drops_when_character(self, test_mod):
         """NotifyAccountUpdate 带 character 更新：drop 掉，不转发给客户端。"""
         lp = liqi_new.LiqiProto()

@@ -87,10 +87,43 @@ class TestEncodeAccountId2:
         assert pure_mod.encode_account_id2(raw) == expected
 
 
-class TestSaveSettings:
-    """SaveSettings 备份逻辑：写盘前必须保留旧文件为 .bak（防配置丢失）。"""
+class TestMigrateViewsFormat:
+    """views 结构迁移：老格式 {i: [slots]} → 新格式 {i: {name, values}}。"""
 
-    def test_creates_backup_before_overwrite(self, monkeypatch, tmp_path):
+    def test_legacy_list_to_new_dict(self, pure_mod):
+        pure_mod.settings = {"config": {"views": {
+            0: [{"slot": 1, "item_id": 308011}],
+            1: [],
+        }}}
+        pure_mod._migrate_views_format()
+        v = pure_mod.settings["config"]["views"]
+        assert v[0] == {"name": "", "values": [{"slot": 1, "item_id": 308011}]}
+        assert v[1] == {"name": "", "values": []}
+
+    def test_new_format_keeps_name(self, pure_mod):
+        pure_mod.settings = {"config": {"views": {
+            2: {"name": "kake", "values": [{"slot": 1, "item_id": 308011}]},
+        }}}
+        pure_mod._migrate_views_format()
+        v = pure_mod.settings["config"]["views"]
+        assert v[2]["name"] == "kake"
+        assert v[2]["values"] == [{"slot": 1, "item_id": 308011}]
+
+    def test_missing_pages_filled(self, pure_mod):
+        pure_mod.settings = {"config": {"views": {
+            0: [{"slot": 1, "item_id": 308011}],
+        }}}
+        pure_mod._migrate_views_format()
+        v = pure_mod.settings["config"]["views"]
+        assert len(v) == 10, "缺失装扮页应补齐 0-9"
+        assert v[0]["values"] == [{"slot": 1, "item_id": 308011}]
+        assert all(v[i] == {"name": "", "values": []} for i in range(1, 10))
+
+
+class TestSaveSettings:
+    """SaveSettings 直写盘：不生成 .bak（2026-08-13 用户要求移除备份逻辑）。"""
+
+    def test_writes_settings_directly(self, monkeypatch, tmp_path):
         import plugin.mod as mod_module
 
         m = mod_module.mod.__new__(mod_module.mod)
@@ -99,12 +132,11 @@ class TestSaveSettings:
         config_dir = tmp_path / "config"
         config_dir.mkdir(exist_ok=True)
         target = config_dir / "settings.mod.yaml"
-        target.write_text("old-content", encoding="utf-8")
 
         monkeypatch.setattr(mod_module, "BASE_DIR", tmp_path)
         m.SaveSettings()
 
-        bak = config_dir / "settings.mod.yaml.bak"
-        assert bak.exists(), "写盘前必须生成 .bak 备份"
-        assert bak.read_text(encoding="utf-8") == "old-content"
         assert target.exists()
+        # 不再生成 .bak 备份
+        bak = config_dir / "settings.mod.yaml.bak"
+        assert not bak.exists(), "已移除 .bak 备份逻辑"
