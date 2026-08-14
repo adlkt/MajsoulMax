@@ -7,7 +7,7 @@ plugin_enable:
 liqi:
   auto_update: true  # 是否自动更新
   github_token: '' # 仅供自己使用，请勿泄漏给任何人
-  liqi_version: 0.16.261-4.0.46    # 本地liqi文件版本
+  liqi_version: 0.16.262-4.0.46    # 本地liqi文件版本
 # 上游代理（可选）：auto=自动检测本机 Clash Verge（有则走它的混合端口，没有则直连）
 #                 / 填 http://ip:端口（显式指定）/ 留空或direct=直连
 proxy:

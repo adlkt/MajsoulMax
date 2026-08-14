@@ -3,7 +3,6 @@ import asyncio
 import os
 import signal
 import socket
-import subprocess
 import sys
 from pathlib import Path
 from mitmproxy.tools.dump import DumpMaster
@@ -237,15 +236,16 @@ async def start_mitm(port: int = 23410):
 
 
 def _detect_clash_verge() -> int | None:
-    """检测本机是否有 Clash Verge 在运行，返回其混合端口；未检测到返回 None。
+    """探测本机 Clash Verge 的混合端口是否可用，返回端口；不可用返回 None。
 
-    判定规则（进程 + 端口双检测，任一命中即视为存在）:
-      1. 端口探测：按序尝试 settings.yaml 的 proxy.clash_port → 7897（Rev 默认）→ 7890（旧版），
-         能连上说明 Clash Verge 一定在跑，且地址确定。
-      2. 进程兜底：进程匹配（Clash Verge / clash-verge / mihomo）存在但默认端口都未监听
-         （用户改过混合端口），回退到显式配置的 clash_port 或 7897。
+    只做端口探测：按序尝试 settings.yaml 的 proxy.clash_port → 7897（Rev 默认）→
+    7890（旧版），能连上说明 Clash Verge 内核在监听，返回该端口；都连不上返回
+    None（mitmproxy 直连回源）。
+
+    不再用「进程兜底」猜端口：clash-verge-service 这类 privileged helper 常驻进程
+    （路径含 clash-verge-rev）不含代理内核、也不监听混合端口，仅凭进程名判断会误
+    判，把流量导向一个根本没监听的端口，导致雀魂连不上。
     """
-    # 1) 端口探测
     override = SETTINGS.get("proxy", {}).get("clash_port")
     ports = []
     if override:
@@ -260,21 +260,6 @@ def _detect_clash_verge() -> int | None:
                 return port
         except OSError:
             continue
-    # 2) 进程兜底
-    try:
-        out = subprocess.run(
-            ["pgrep", "-f", "Clash Verge|clash-verge|mihomo"],
-            capture_output=True, text=True, timeout=2,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if out.returncode == 0 and out.stdout.strip():
-        port = ports[0] if override else 7897
-        logger.warning(
-            f"检测到 Clash Verge 进程但 7897/7890 均未监听，按 {port} 使用；"
-            f"如不对请在 settings.yaml 配置 proxy.clash_port"
-        )
-        return port
     return None
 
 

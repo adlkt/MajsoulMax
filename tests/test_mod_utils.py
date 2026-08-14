@@ -7,6 +7,7 @@ import pytest
 from ruamel.yaml import YAML
 
 from plugin.mod import mod
+from proto import liqi_pb2, basic_pb2
 
 
 @pytest.fixture
@@ -118,6 +119,57 @@ class TestMigrateViewsFormat:
         assert len(v) == 10, "缺失装扮页应补齐 0-9"
         assert v[0]["values"] == [{"slot": 1, "item_id": 308011}]
         assert all(v[i] == {"name": "", "values": []} for i in range(1, 10))
+
+
+class TestUpdateCharacterSort:
+    """角色排序闭环：Req 保存 star_chars + other_sort，Res 回填两个字段。"""
+
+    def test_req_saves_both_sorts(self, pure_mod):
+        req = liqi_pb2.ReqUpdateCharacterSort()
+        req.sort.extend([200050, 200041])
+        req.other_sort.extend([200001, 200002, 200003])
+        block = basic_pb2.BaseMessage()
+        block.data = req.SerializeToString()
+
+        modify, drop, fake, inject, inject_msg, data = pure_mod._req_update_character_sort(block)
+
+        assert fake is True, "updateCharacterSort 请求应被拦截（不发给服务器）"
+        assert pure_mod.settings["config"]["star_chars"] == [200050, 200041]
+        assert pure_mod.settings["config"]["other_sort"] == [200001, 200002, 200003]
+
+    def test_req_without_other_sort_keeps_empty(self, pure_mod):
+        """旧客户端/旧行为：other_sort 缺省时存空列表，不报错。"""
+        req = liqi_pb2.ReqUpdateCharacterSort()
+        req.sort.extend([200050])
+        block = basic_pb2.BaseMessage()
+        block.data = req.SerializeToString()
+
+        pure_mod._req_update_character_sort(block)
+
+        assert pure_mod.settings["config"]["star_chars"] == [200050]
+        assert pure_mod.settings["config"]["other_sort"] == []
+
+    def test_fill_characters_restores_both_sorts(self, pure_mod):
+        pure_mod.max_data = {
+            "character": [200001, 200002],
+            "skin": [400101, 400201],
+            "endings": [1001],
+            "emoji": {200001: [1], 200002: [1]},
+        }
+        pure_mod.settings = {"config": {
+            "characters": {},
+            "character": 200001,
+            "emoji": False,
+            "star_chars": [200050, 200041],
+            "other_sort": [200001, 200002],
+        }}
+        target = liqi_pb2.ResCharacterInfo()
+
+        pure_mod._fill_characters(target)
+
+        assert list(target.character_sort) == [200050, 200041]
+        assert list(target.other_character_sort) == [200001, 200002]
+        assert len(target.characters) == 2, "全部角色应被注入"
 
 
 class TestSaveSettings:

@@ -27,6 +27,7 @@ config:
   characters: {}  # 各角色使用的皮肤
   nickname: '' # 自定义你的名字
   star_chars: [] # 星标角色
+  other_sort: [] # 其他角色排序
   bianjietishi: false # 强制启用便捷提示，用于部分场没有宝牌指示、和牌指示等
   title: 0  # 当前使用的称号
   loading_image: [] # 加载CG
@@ -262,8 +263,9 @@ config:
         fake = True
         data = liqi_pb2.ReqUpdateCharacterSort()
         data.ParseFromString(msg_block.data)
-        # 保存星标角色
+        # 保存星标角色 + 其他角色排序
         self.settings['config']['star_chars'] = list(data.sort)
+        self.settings['config']['other_sort'] = list(data.other_sort)
         self.SaveSettings()
         return False, False, fake, False, b'', data
 
@@ -352,8 +354,8 @@ config:
         """补全角色数据：注入全部角色/皮肤/称号/结局。
 
         target 需含 characters/skins/main_character_id/character_sort/
-        hidden_characters/finished_endings/rewarded_endings 字段
-        （ResCharacterInfo 或 ResFetchInfo.character_info 均可）。
+        other_character_sort/hidden_characters/finished_endings/rewarded_endings
+        字段（ResCharacterInfo 或 ResFetchInfo.character_info 均可）。
         """
         target.ClearField('characters')
         character_keys = self.settings['config']['characters'].keys()
@@ -376,6 +378,9 @@ config:
         target.ClearField('character_sort')
         target.character_sort.extend(
             self.settings['config']['star_chars'])
+        target.ClearField('other_character_sort')
+        target.other_character_sort.extend(
+            self.settings['config']['other_sort'])
         target.ClearField('hidden_characters')
         target.ClearField('finished_endings')
         target.ClearField('rewarded_endings')
