@@ -165,3 +165,34 @@ class TestReqFlow:
         addon.websocket_message(_make_flow(
             host="game.maj-soul.com", messages=[msg]))
         assert len(called) == 0  # inject 未触发但也没崩
+
+
+class TestSensitiveLogRedaction:
+    """请求方向凭证脱敏：oauth2Login/login/loginBeat 只打 method+len，不打内容。"""
+
+    @pytest.mark.parametrize("method", [
+        ".lq.Lobby.oauth2Login",  # token 登录，请求含凭证
+        ".lq.Lobby.login",        # 账号登录
+        ".lq.Lobby.loginBeat",    # 心跳，含会话 contract
+    ])
+    def test_sensitive_methods_redacted(self, method):
+        line = addons._redacted_log(method, 42)
+        assert line is not None
+        assert method in line
+        assert "42" in line
+
+    def test_plain_methods_not_redacted(self):
+        assert addons._redacted_log(".lq.Lobby.fetchTitleList", 42) is None
+        assert addons._redacted_log(".lq.NotifyAccountLevelChange", 42) is None
+
+    def test_oauth2_login_request_flows_without_error(self, addon):
+        """oauth2Login 请求走完整 addon 链路：不抛异常（日志脱敏）。"""
+        req = liqi_pb2.ReqOauth2Login()
+        req.access_token = "super-secret-token-please-do-not-log"
+        blk = basic_pb2.BaseMessage()
+        blk.method_name = ".lq.Lobby.oauth2Login"
+        blk.data = req.SerializeToString()
+        buf = b"\x02" + b"\x01\x00" + blk.SerializeToString()
+        addon.websocket_message(_make_flow(
+            host="game.maj-soul.com",
+            messages=[FakeMessage(buf, from_client=True)]))

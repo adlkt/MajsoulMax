@@ -221,3 +221,39 @@ class TestMainDispatch:
         modify, drop, msg, inject, inject_msg = test_mod.main(
             SimpleNamespace(content=buf, from_client=False), lp)
         assert modify is False and drop is False
+
+
+class TestNotifyGameFinishRewardV2:
+    """NotifyGameFinishRewardV2：依赖 safe['characters']/['main_character_id']，
+    未登录（safe 未填充）时不能 KeyError（与 room_player_update 同款守卫）。"""
+
+    def test_not_logged_in_does_not_crash(self, test_mod):
+        test_mod.safe = {}  # 未登录：safe 无 characters/main_character_id
+        n = liqi_pb2.NotifyGameFinishRewardV2()
+        blk = basic_pb2.BaseMessage()
+        blk.method_name = ".lq.NotifyGameFinishRewardV2"
+        blk.data = n.SerializeToString()
+
+        modify, drop, data = test_mod._notify_game_finish_reward_v2(blk)
+
+        assert modify is False and drop is False and data is None
+
+    def test_logged_in_updates_main_character(self, test_mod):
+        """已登录：主角色经验/等级被回填为满级、加 0 经验。"""
+        test_mod.safe = {
+            "main_character_id": 200001,
+            "characters": [liqi_pb2.Character(charid=200001)],
+        }
+        n = liqi_pb2.NotifyGameFinishRewardV2()
+        n.main_character.level = 3
+        n.main_character.exp = 100
+        blk = basic_pb2.BaseMessage()
+        blk.method_name = ".lq.NotifyGameFinishRewardV2"
+        blk.data = n.SerializeToString()
+
+        modify, drop, data = test_mod._notify_game_finish_reward_v2(blk)
+
+        assert modify is True
+        assert data.main_character.level == 5
+        assert data.main_character.exp == 0
+        assert data.main_character.add == 0

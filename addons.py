@@ -149,13 +149,18 @@ class MajsoulMaxAddon:
                 else:
                     logger.info(f"接收到：{result}")
                 if HELPER_ENABLE:
-                    # 如果启用helper，就把消息丢进helper里
-                    helper_plugin.main(result)
+                    # 如果启用helper，就把消息丢进helper里（异常不能中断消息流）
+                    try:
+                        helper_plugin.main(result)
+                    except Exception as e:
+                        logger.warning(f"helper 处理异常，跳过: {e}")
             else:
                 if MOD_ENABLE and modify:
                     logger.success(f"已发送(modify)：{result}")
                 else:
-                    logger.info(f"已发送：{result}")
+                    # 凭证类请求（oauth2Login/login/loginBeat）只打 method+len，防止 token 落日志
+                    redacted = _redacted_log(result['method'], len(message.content))
+                    logger.info(redacted if redacted is not None else f"已发送：{result}")
     def request(self,flow: http.HTTPFlow):
         # 在捕获到HTTP消息时触发
         if not any(k in flow.request.host for k in self._hosts):
@@ -172,6 +177,23 @@ class MajsoulMaxAddon:
                         logger.error(f"替换错误(error):{flow.request.path}")
 
 PID_FILE = Path("/tmp/majsoul-max.pid")
+
+
+# 请求方向携带凭证/会话标识的方法：日志只打 method+len，不打印内容。
+# 368697d 只防了错误路径（解析失败只记长度），成功路径此前会完整打印
+# oauth2Login 请求（含 access_token）到终端日志。
+_SENSITIVE_METHODS = frozenset((
+    ".lq.Lobby.oauth2Login",  # token 登录，请求含凭证
+    ".lq.Lobby.login",        # 账号登录
+    ".lq.Lobby.loginBeat",    # 心跳，含会话 contract
+))
+
+
+def _redacted_log(method: str, content_len: int) -> str | None:
+    """凭证类方法返回脱敏日志行，其余返回 None（调用方打全量）。"""
+    if method in _SENSITIVE_METHODS:
+        return f"{method}（内容脱敏，len={content_len}B）"
+    return None
 
 
 def _write_pid_file():

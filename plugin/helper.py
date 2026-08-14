@@ -64,6 +64,17 @@ config:
         with open(BASE_DIR / 'config' / 'settings.helper.yaml', 'w', encoding='utf8') as f:
             self.yaml.dump(self.settings, f)
 
+    def _post(self, data):
+        """发送到小助手：带超时，失败只警告不中断 addon（小助手未启动时
+        requests 默认会无限挂起或抛异常刷屏）。"""
+        try:
+            requests.post(
+                self.settings['config']['api_url'],
+                json=data, verify=False, timeout=3,
+            )
+        except requests.RequestException as e:
+            logger.warning(f"[helper] 发送失败（小助手不可达？）：{e}")
+
     def main(self, result):
         if result['method'] in self.method:
             if result['method'] == '.lq.ActionPrototype':
@@ -94,9 +105,7 @@ config:
             else:
                 data = result['data']
             logger.success(f'[helper] 已发送：{data}')
-            requests.post(self.settings['config']
-                          ['api_url'], json=data, verify=False)
+            self._post(data)
             if 'liqi' in data.keys():  # 补发立直消息
                 logger.success(f'[helper] 已发送：{data["liqi"]}')
-                requests.post(self.settings['config']['api_url'],
-                              json=data['liqi'], verify=False)
+                self._post(data['liqi'])

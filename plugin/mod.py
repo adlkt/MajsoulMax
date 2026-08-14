@@ -191,6 +191,9 @@ config:
         return modify, False, data
 
     def _notify_game_finish_reward_v2(self, msg_block):
+        if not self.safe.get('main_character_id'):
+            # 未登录（safe 未填充）前收到结算通知，无法定位主角色，跳过修改
+            return False, False, None
         modify = True
         data = liqi_pb2.NotifyGameFinishRewardV2()
         data.ParseFromString(msg_block.data)
