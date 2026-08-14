@@ -217,12 +217,6 @@ config:
             p.nickname = self._prepend_zone(p.account_id, p.nickname)
         return modify, False, data
 
-    def _notify_announcement_update(self, msg_block):
-        modify = True
-        data = liqi_pb2.NotifyAnnouncementUpdate()
-        data.ParseFromString(msg_block.data)
-        return modify, False, data
-
     # ============ Req handlers ============
 
     def _req_change_main_character(self, msg_block):
@@ -427,6 +421,50 @@ config:
         target.ClearField('title_list')
         target.title_list.extend(self.max_data['title'])
 
+    def _apply_view_slots(self, views_field, view_dicts) -> int | None:
+        """把本地装扮配置写入 ViewSlot 列表；type=1 随机装扮现场抽一个 item_id。
+
+        返回 slot==5 的 item_id（头像框），无则 None。随机候选列表（item_id_list）
+        不下发给客户端——客户端只看 item_id 决定外观，下发整个列表会导致随机失效。
+        """
+        frame = None
+        for view in view_dicts:
+            slot = views_field.add()
+            slot.slot = view.get('slot', 0)
+            if view.get('type') == 0:
+                slot.item_id = view.get('item_id', 0)
+            else:
+                slot.item_id = random.choice(view['item_id_list'])
+            if slot.slot == 5:
+                frame = slot.item_id
+        return frame
+
+    def _apply_self_player(self, player, views_field) -> int | None:
+        """注入自己的角色/皮肤/昵称/称号/装扮（createRoom/authGame/fetchRoom/fetchGameRecord 共用）。
+
+        views_field 为 views 挂载容器（如 character.views / player.views / account.views），
+        需由调用方先 ClearField（各 handler 的挂载位置不同）。
+        返回 slot5 装扮 item_id（头像框），无则 None。
+        """
+        cfg = self.settings['config']
+        if cfg['random_character']['enabled'] and cfg['random_character']['pool']:
+            item = random.choice(cfg['random_character']['pool'])
+            player.character.charid = item['character_id']
+            player.avatar_id = player.character.skin = item['skin_id']
+        else:
+            player.character.charid = cfg['character']
+            player.avatar_id = player.character.skin = cfg['characters'][cfg['character']]
+        if cfg['emoji']:
+            player.character.extra_emoji.extend(
+                self.max_data['emoji'][player.character.charid])
+        if cfg['nickname'] != '':
+            player.nickname = cfg['nickname']
+        player.title = cfg['title']
+        frame = self._apply_view_slots(
+            views_field, cfg['views'][cfg['views_index']]['values'])
+        player.verified = cfg['verified']
+        return frame
+
     # ============ Res handlers ============
 
     def _res_fetch_character_info(self, msg_block):
@@ -455,8 +493,8 @@ config:
             data.account.avatar_id = self._default_skin_id(
                 self.settings['config']['character'])
         for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
-            if view['slot'] == 5:
-                data.account.avatar_frame = view['item_id']
+            if view.get('slot') == 5:
+                data.account.avatar_frame = view.get('item_id', 0)
         if self.settings['config']['nickname'] != '':
             data.account.nickname = self.settings['config']['nickname']
         data.account.title = self.settings['config']['title']
@@ -473,25 +511,13 @@ config:
         for p in data.room.persons:
             p.character.is_upgraded = True
             p.character.level = 5
+            p.character.rewarded_level.extend([1, 2, 3, 4, 5])
+            p.character.exp = 0
             if p.account_id == self.safe['account_id']:
-                p.avatar_id = self.settings['config']['characters'][self.settings['config']['character']]
-                p.character.charid = self.settings['config']['character']
-                p.character.exp = 0
-                p.character.rewarded_level.extend(
-                    [1, 2, 3, 4, 5])
-                p.character.skin = self.settings['config'][
-                    'characters'][self.settings['config']['character']]
-                if self.settings['config']['emoji']:
-                    p.character.extra_emoji.extend(
-                        self.max_data['emoji'][p.character.charid])
-                if self.settings['config']['nickname'] != '':
-                    p.nickname = self.settings['config']['nickname']
-                p.title = self.settings['config']['title']
                 p.character.ClearField('views')
-                for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
-                    view_slot = p.character.views.add()
-                    json_format.ParseDict(view, view_slot)
-                p.verified = self.settings['config']['verified']
+                frame = self._apply_self_player(p, p.character.views)
+                if frame is not None:
+                    p.avatar_frame = frame
             if self.settings['config']['show_server']:
                 p.nickname = self._prepend_zone(p.account_id, p.nickname)
         return modify, False, data
@@ -517,30 +543,10 @@ config:
             p.character.rewarded_level.extend([1, 2, 3, 4, 5])
             p.character.exp = 0
             if p.account_id == self.safe['account_id']:
-                if self.settings['config']['random_character']['enabled'] and self.settings['config']['random_character']['pool']!=[]: # 处理随机角色
-                    item = random.choice(self.settings['config']['random_character']['pool'])
-                    p.character.charid = item['character_id']
-                    p.avatar_id = p.character.skin = item['skin_id']
-                else:
-                    p.character.charid = self.settings['config']['character']
-                    p.avatar_id = p.character.skin = self.settings['config']['characters'][self.settings['config']['character']]
-                if self.settings['config']['emoji']:
-                    p.character.extra_emoji.extend(
-                        self.max_data['emoji'][p.character.charid])
-                if self.settings['config']['nickname'] != '':
-                    p.nickname = self.settings['config']['nickname']
-                p.title = self.settings['config']['title']
                 p.ClearField('views')
-                for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
-                    view_slot = p.views.add()
-                    view_slot.slot = view['slot']
-                    if view['type'] == 0: # 非随机装扮
-                        view_slot.item_id = view['item_id']
-                    else: # 随机装扮，要自己抽
-                        view_slot.item_id = random.choice(view['item_id_list'])
-                    if view['slot'] == 5:
-                        p.avatar_frame = view['item_id']
-                p.verified = self.settings['config']['verified']
+                frame = self._apply_self_player(p, p.views)
+                if frame is not None:
+                    p.avatar_frame = frame
 
             if self.settings['config']['show_server']:
                 p.nickname = self._prepend_zone(p.account_id, p.nickname)
@@ -594,24 +600,12 @@ config:
             p.character.is_upgraded = True
             p.character.level = 5
             p.character.rewarded_level.extend([1, 2, 3, 4, 5])
+            p.character.exp = 0
             if p.account_id == self.safe['account_id']:
-                p.avatar_id = self.settings['config']['characters'][self.settings['config']['character']]
-                p.character.charid = self.settings['config']['character']
-                p.character.exp = 0
-
-                p.character.skin = self.settings['config'][
-                    'characters'][self.settings['config']['character']]
-                if self.settings['config']['emoji']:
-                    p.character.extra_emoji.extend(
-                        self.max_data['emoji'][p.character.charid])
-                if self.settings['config']['nickname'] != '':
-                    p.nickname = self.settings['config']['nickname']
-                p.title = self.settings['config']['title']
                 p.character.ClearField('views')
-                for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
-                    view_slot = p.character.views.add()
-                    json_format.ParseDict(view, view_slot)
-                p.verified = self.settings['config']['verified']
+                frame = self._apply_self_player(p, p.character.views)
+                if frame is not None:
+                    p.avatar_frame = frame
             if self.settings['config']['show_server']:
                 p.nickname = self._prepend_zone(p.account_id, p.nickname)
         return modify, False, data
@@ -627,6 +621,8 @@ config:
     def _res_fetch_all_common_views(self, msg_block):
         modify = True
         data = liqi_pb2.ResAllcommonViews()
+        # 先解析服务器返回（本地 views 全量覆盖，但保留字段契约，防未来依赖时炸）
+        data.ParseFromString(msg_block.data)
         self._fill_common_views(data)
         return modify, False, data
 
@@ -709,31 +705,10 @@ config:
             account.character.exp = 0
             if account.account_id == self.safe['account_id']:
                 result+='（自己）'
-                if self.settings['config']['random_character']['enabled'] and self.settings['config']['random_character']['pool']!=[]: # 处理随机角色
-                    item = random.choice(self.settings['config']['random_character']['pool'])
-                    account.character.charid = item['character_id']
-                    account.avatar_id = account.character.skin = item['skin_id']
-                else:
-                    account.character.charid = self.settings['config']['character']
-                    account.avatar_id = account.character.skin = self.settings['config']['characters'][self.settings['config']['character']]
-
-                if self.settings['config']['emoji']:
-                    account.character.extra_emoji.extend(
-                        self.max_data['emoji'][account.character.charid])
-                if self.settings['config']['nickname'] != '':
-                    account.nickname = self.settings['config']['nickname']
-                account.title = self.settings['config']['title']
                 account.ClearField('views')
-                for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
-                    view_slot = account.views.add()
-                    view_slot.slot = view['slot']
-                    if view['type'] == 0: # 非随机装扮
-                        view_slot.item_id = view['item_id']
-                    else: # 随机装扮，要自己抽
-                        view_slot.item_id = random.choice(view['item_id_list'])
-                    if view['slot'] == 5:
-                        account.avatar_frame = view['item_id']
-                account.verified = self.settings['config']['verified']
+                frame = self._apply_self_player(account, account.views)
+                if frame is not None:
+                    account.avatar_frame = frame
             elif self.settings['config']['safe_mode']:
                 account.character.charid=200001
                 account.character.skin=400101
@@ -813,7 +788,6 @@ _NOTIFY_HANDLERS = {
     '.lq.NotifyRoomPlayerUpdate': '_notify_room_player_update',
     '.lq.NotifyGameFinishRewardV2': '_notify_game_finish_reward_v2',
     '.lq.NotifyCustomContestSystemMsg': '_notify_custom_contest_system_msg',
-    '.lq.NotifyAnnouncementUpdate': '_notify_announcement_update',
 }
 
 _REQ_HANDLERS = {

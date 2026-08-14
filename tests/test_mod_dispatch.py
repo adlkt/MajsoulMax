@@ -222,6 +222,47 @@ class TestMainDispatch:
             SimpleNamespace(content=buf, from_client=False), lp)
         assert modify is False and drop is False
 
+    def test_res_auth_game_injects_self_views(self, test_mod):
+        """Res.authGame 完整链路：自己玩家注入 + 随机装扮抽候选 + slot5 头像框。"""
+        test_mod.safe = {"account_id": 123}
+        test_mod.settings["config"].update({
+            "character": 200001,
+            "characters": {200001: 400101},
+            "views": {0: {"name": "", "values": [
+                {"slot": 1, "item_id": 308011, "type": 0},
+                {"slot": 5, "item_id_list": [500, 501], "type": 1},
+            ]}},
+            "views_index": 0,
+        })
+        lp = liqi_new.LiqiProto()
+        # 登记 authGame 的 res_type（addons 层职责，测试手动登记）
+        req_buf = _req_buf(".lq.FastTest.authGame",
+                           liqi_pb2.ReqAuthGame().SerializeToString())
+        lp.parse(SimpleNamespace(content=req_buf, from_client=True))
+        res = liqi_pb2.ResAuthGame()
+        p = res.players.add()
+        p.account_id = 123
+        p.nickname = "orig"
+        buf = _res_buf(1, res.SerializeToString())
+
+        modify, drop, msg, inject, inject_msg = test_mod.main(
+            SimpleNamespace(content=buf, from_client=False), lp)
+
+        assert modify is True
+        blk = basic_pb2.BaseMessage()
+        blk.ParseFromString(msg[3:])
+        out = liqi_pb2.ResAuthGame()
+        out.ParseFromString(blk.data)
+        own = out.players[0]
+        assert own.character.charid == 200001
+        assert own.avatar_id == 400101
+        assert own.nickname == "orig"  # 未配 nickname 时保留原值
+        # 固定装扮 + 随机装扮（抽候选之一）+ 头像框 = 随机项
+        assert own.views[0].item_id == 308011
+        assert own.views[1].item_id in (500, 501)
+        assert list(own.views[1].item_id_list) == [], "候选列表不下发"
+        assert own.avatar_frame in (500, 501)
+
 
 class TestNotifyGameFinishRewardV2:
     """NotifyGameFinishRewardV2：依赖 safe['characters']/['main_character_id']，
@@ -257,3 +298,104 @@ class TestNotifyGameFinishRewardV2:
         assert data.main_character.level == 5
         assert data.main_character.exp == 0
         assert data.main_character.add == 0
+
+
+class TestApplyViewSlots:
+    """_apply_view_slots：本地装扮配置 → ViewSlot，随机装扮现场抽 item_id。"""
+
+    def test_fixed_item(self, test_mod):
+        """type=0 固定装扮：直接填 item_id，候选列表为空。"""
+        views = liqi_pb2.ResAuthGame().players.add().views
+        frame = test_mod._apply_view_slots(views, [
+            {"slot": 1, "item_id": 308011, "type": 0},
+        ])
+        assert len(views) == 1
+        assert views[0].slot == 1
+        assert views[0].item_id == 308011
+        assert list(views[0].item_id_list) == []
+        assert frame is None
+
+    def test_random_item_drawn_from_pool(self, test_mod):
+        """type=1 随机装扮：现场抽一个 item_id，候选列表不下发。"""
+        views = liqi_pb2.ResAuthGame().players.add().views
+        frame = test_mod._apply_view_slots(views, [
+            {"slot": 5, "item_id_list": [100, 200, 300], "type": 1},
+        ])
+        assert views[0].item_id in (100, 200, 300)
+        assert list(views[0].item_id_list) == []
+        assert frame in (100, 200, 300)
+
+    def test_missing_slot_key_guard(self, test_mod):
+        """view 缺 slot 键不 KeyError（防御本地配置手改坏）。"""
+        views = liqi_pb2.ResAuthGame().players.add().views
+        test_mod._apply_view_slots(views, [{"item_id": 1, "type": 0}])
+        assert views[0].slot == 0
+
+
+class TestApplySelfPlayer:
+    """_apply_self_player：自己玩家角色/皮肤/昵称/称号/装扮注入（4 个 handler 共用）。"""
+
+    def _player(self):
+        return liqi_pb2.ResAuthGame().players.add()
+
+    def test_injects_self_profile(self, test_mod):
+        test_mod.settings["config"].update({
+            "character": 200001,
+            "characters": {200001: 400101},
+            "nickname": "wjy",
+            "title": 5,
+            "verified": 2,
+            "views_index": 0,
+            "views": {0: {"name": "", "values": [
+                {"slot": 1, "item_id": 308011, "type": 0}]}},
+        })
+        p = self._player()
+        frame = test_mod._apply_self_player(p, p.views)
+        assert p.character.charid == 200001
+        assert p.avatar_id == 400101
+        assert p.character.skin == 400101
+        assert p.nickname == "wjy"
+        assert p.title == 5
+        assert p.verified == 2
+        assert p.views[0].item_id == 308011
+        assert frame is None
+
+    def test_random_character_pool(self, test_mod):
+        test_mod.settings["config"].update({
+            "character": 200001,
+            "characters": {200001: 400101},
+            "random_character": {"enabled": True, "pool": [
+                {"character_id": 200041, "skin_id": 400501}]},
+            "views": {0: {"name": "", "values": []}},
+            "views_index": 0,
+        })
+        p = self._player()
+        test_mod._apply_self_player(p, p.views)
+        assert p.character.charid == 200041
+        assert p.avatar_id == 400501
+
+    def test_slot5_returns_frame(self, test_mod):
+        test_mod.settings["config"].update({
+            "character": 200001,
+            "characters": {200001: 400101},
+            "views": {0: {"name": "", "values": [
+                {"slot": 5, "item_id": 308099, "type": 0}]}},
+            "views_index": 0,
+        })
+        p = self._player()
+        frame = test_mod._apply_self_player(p, p.views)
+        assert frame == 308099
+
+    def test_views_mounted_on_character_container(self, test_mod):
+        """views 挂载位置由调用方传入（character.views 而非 player.views）。"""
+        test_mod.settings["config"].update({
+            "character": 200001,
+            "characters": {200001: 400101},
+            "views": {0: {"name": "", "values": [
+                {"slot": 1, "item_id": 308011, "type": 0}]}},
+            "views_index": 0,
+        })
+        p = liqi_pb2.ResCreateRoom().room.persons.add()
+        test_mod._apply_self_player(p, p.character.views)
+        assert p.character.views[0].item_id == 308011
+        assert len(p.views) == 0  # player 顶层 views 未被误填
