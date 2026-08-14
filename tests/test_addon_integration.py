@@ -196,3 +196,39 @@ class TestSensitiveLogRedaction:
         addon.websocket_message(_make_flow(
             host="game.maj-soul.com",
             messages=[FakeMessage(buf, from_client=True)]))
+
+
+class TestConfigMerge:
+    """SETTINGS 深合并：settings.yaml 只写部分键时，默认嵌套键不能丢
+    （浅合并会把 plugin_enable 整块替换 → ['helper'] KeyError）。"""
+
+    def test_nested_keys_preserved(self):
+        base = {"plugin_enable": {"mod": True, "helper": False},
+                "liqi": {"auto_update": True}}
+        addons._deep_merge(base, {"proxy": {"upstream": "direct"}})
+        assert base["plugin_enable"]["helper"] is False
+        assert base["proxy"]["upstream"] == "direct"
+
+    def test_partial_nested_override(self):
+        base = {"liqi": {"auto_update": True, "liqi_version": "1"}}
+        addons._deep_merge(base, {"liqi": {"auto_update": False}})
+        assert base["liqi"]["auto_update"] is False
+        assert base["liqi"]["liqi_version"] == "1"
+
+    def test_none_override_noop(self):
+        base = {"a": 1}
+        addons._deep_merge(base, None)  # 空配置文件不崩
+
+
+class TestSafeReplacePath:
+    """replace 资源路径防呆：越界路径（../ 穿越）必须拒绝。"""
+
+    def test_normal_path_ok(self):
+        p = addons._safe_replace_path("/img/1.png")
+        assert p is not None
+        assert p.name == "1.png"
+        assert p.is_relative_to(addons.BASE_DIR / "replace")
+
+    def test_traversal_rejected(self):
+        assert addons._safe_replace_path("../../etc/passwd") is None
+        assert addons._safe_replace_path("/../../etc/passwd") is None

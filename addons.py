@@ -10,11 +10,12 @@ from mitmproxy.options import Options
 from loguru import logger
 from mitmproxy import http, ctx
 from plugin import helper, mod, replace
-from ruamel.yaml import YAML
+from ruamel.yaml import YAML, YAMLError
 from sys import stdout
 from plugin import update
 
 BASE_DIR = Path(__file__).resolve().parent
+REPLACE_DIR = BASE_DIR / "replace"
 
 VERSION = "v2026.07.07"
 
@@ -43,10 +44,34 @@ liqi:
 proxy:
   upstream: auto
 """)
+def _deep_merge(base: dict, override) -> None:
+    """递归合并 override 到 base（嵌套 dict 逐层合并，防浅合并丢键）。
+
+    浅合并（dict.update）在 settings.yaml 只写部分键时会把 plugin_enable/liqi
+    整块替换，导致后续 ['helper'] 等 KeyError。
+    """
+    if override is None:
+        return
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(base.get(k), dict):
+            _deep_merge(base[k], v)
+        else:
+            base[k] = v
+
+
+def _safe_replace_path(path: str) -> Path | None:
+    """校验 replace 资源路径不越界，返回安全的绝对路径；越界（../ 穿越）返回 None。"""
+    target = (REPLACE_DIR / path.lstrip('/')).resolve()
+    if not target.is_relative_to(REPLACE_DIR):
+        logger.warning(f"replace 路径越界，拒绝: {path}")
+        return None
+    return target
+
+
 try:
     with open(BASE_DIR / "config" / "settings.yaml", "r", encoding="utf-8") as f:
-        SETTINGS.update(yaml.load(f))
-except (FileNotFoundError, KeyError):
+        _deep_merge(SETTINGS, yaml.load(f))
+except (FileNotFoundError, KeyError, YAMLError):
     logger.warning(
         """首次运行，默认启用mod，禁用helper\n
         如需使用，请修改 ./config/settings.yaml 文件\n
@@ -169,12 +194,14 @@ class MajsoulMaxAddon:
             # 如果启用replace，就把HTTP消息丢进replace里
             path = replace_plugin.main(flow.request)
             if path != '':
-                with open(BASE_DIR / "replace" / path.lstrip('/'), "rb") as f:
-                    if (body := f.read() )!=b"":
-                        flow.response = http.Response.make(200, body) #,  {"Content-Type": "image/png"})
-                        logger.success(f"已替换(replace)：{flow.request.path}")
-                    else:
-                        logger.error(f"替换错误(error):{flow.request.path}")
+                target = _safe_replace_path(path)
+                if target is None:
+                    logger.error(f"替换路径越界(error):{flow.request.path}")
+                elif (body := target.read_bytes()) != b"":
+                    flow.response = http.Response.make(200, body) #,  {"Content-Type": "image/png"})
+                    logger.success(f"已替换(replace)：{flow.request.path}")
+                else:
+                    logger.error(f"替换错误(error):{flow.request.path}")
 
 PID_FILE = Path("/tmp/majsoul-max.pid")
 
