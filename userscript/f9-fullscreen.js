@@ -1,9 +1,10 @@
 // ==UserScript==
 // @name         雀魂 F9 全屏切换
 // @namespace    adlkt
-// @version      1.3.0
-// @description  在雀魂麻将页面按 F9 切换全屏（实现参考 VueUse useFullscreen）；含 Chrome 全屏状态机卡死自愈
+// @version      1.4.0
+// @description  在雀魂麻将页面按 F9 切换全屏（实现参考 VueUse useFullscreen）；v1.4：补 game.maj-soul.net 域名、退出稳定窗口防竞态、进入失败自动重试、状态机自愈、诊断日志
 // @match        https://game.maj-soul.com/1/*
+// @match        https://game.maj-soul.net/1/*
 // @match        https://mahjongsoul.game.yo-star.com/1/*
 // @match        https://game.mahjongsoul.com/1/*
 // @run-at       document-start
@@ -14,8 +15,15 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.3.0';
-  console.log(`[f9-fullscreen] v${VERSION} loaded @`, location.href);
+  const VERSION = '1.4.0';
+  // 详细诊断：控制台执行 localStorage.f9debug='1' 后刷新页面开启；默认只打每次切换结果
+  const DEBUG = (() => {
+    try { return localStorage.getItem('f9debug') === '1'; } catch { return false; }
+  })();
+  const log = (...a) => console.info('[f9]', ...a);
+  const dbg = (...a) => { if (DEBUG) console.debug('[f9]', ...a); };
+
+  log(`v${VERSION} loaded @`, location.href);
 
   // ---- API 探测链（移植自 VueUse useFullscreen）----
   const requestMethods = [
@@ -67,9 +75,23 @@
     return Boolean(el) && el === target();
   }
 
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // 轮询等待谓词成立，最多 ms；返回是否成功。用于确认全屏真正生效/退出。
+  function waitUntil(predicate, ms, interval = 100) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      (function check() {
+        if (predicate()) return resolve(true);
+        if (Date.now() - start >= ms) return resolve(false);
+        setTimeout(check, interval);
+      })();
+    });
+  }
+
   // 等待 fullscreen 调用 settle；超时返回 TIMED_OUT，永不 throw（防 unhandled rejection）
   const TIMED_OUT = Symbol('f9-fullscreen-timeout');
-  function withTimeout(p, ms = 5000) {
+  function withTimeout(p, ms = 3000) {
     return new Promise((resolve) => {
       let done = false;
       const timer = setTimeout(() => {
@@ -85,9 +107,9 @@
     });
   }
 
-  // 绕过 anyFullscreen() 检查，强制调一次 exitFullscreen。
-  // Chrome 已知 bug：全屏请求 pending 时页面导航/reload 会让状态机锁死，
-  // 此时 fullscreenElement 可能已为 null，但 exitFullscreen 仍能重置状态机。
+  // 绕过 anyFullscreen() 检查，强制调一次 exit。注意：Chrome 状态机卡在
+  // EnteringFullscreen 时 exit/request 都会被静默忽略，所以这只是尽力而为，
+  // 真正的自愈靠重试循环 + 等待让状态机自然收敛。
   function forceExit() {
     try {
       if (!exitMethod) return;
@@ -113,65 +135,15 @@
     } catch { /* 忽略 */ }
   }
 
-  // 上一次请求超时未恢复 → 下一次进入前先强制重置状态机
-  let needsReset = false;
-  // 连续自愈失败计数：第 2 次仍失败时给出"重启浏览器"终态提示
-  let failStreak = 0;
+  // ---- 状态机 ----
+  let toggling = false;   // 互斥锁：防快速连按 F9 并发 request/exit
+  let failStreak = 0;     // 连续失败计数（第 2 次仍失败时提示刷新/重开标签页）
+  let lastFsExit = 0;     // 上次"任何原因"退出全屏的时间戳（ESC/脚本/外部）
 
-  async function exit() {
-    if (!anyFullscreen()) return;
-    const p = exitMethod in doc ? doc[exitMethod]() : target()[exitMethod]();
-    const r = await withTimeout(p);
-    if (r === TIMED_OUT && anyFullscreen()) {
-      console.warn('[f9-fullscreen] 退出全屏超时，尝试强制重置状态机');
-      failStreak++;
-      needsReset = true;
-      forceExit();
-      toast(failStreak >= 2 ? '全屏仍无法恢复，建议重启浏览器' : '退出全屏卡住，已尝试重置，请再按一次 F9');
-    } else {
-      failStreak = 0;
-    }
-  }
+  const SETTLE_MS = 500;    // 退出过渡稳定窗口（防 1654512 类 enter/exit 竞态）
+  const MAX_ATTEMPTS = 3;   // 进入全屏最大重试次数
 
-  async function enter() {
-    if (!isSupported()) {
-      console.warn('[f9-fullscreen] document.fullscreenEnabled === false，浏览器/页面禁止了全屏 API');
-      return;
-    }
-    if (targetIsFullscreen()) return;
-    if (anyFullscreen()) await exit(); // 有别的元素全屏（如游戏内 canvas），先清场再进
-    if (needsReset) {
-      needsReset = false;
-      forceExit();
-      await new Promise((r) => setTimeout(r, 150)); // 给 Chrome 状态机一点重置时间
-    }
-    const r = await withTimeout(target()[requestMethod]());
-    if (r === TIMED_OUT) {
-      if (targetIsFullscreen()) { failStreak = 0; return; } // 实际已进入，promise 没 settle 而已
-      console.warn('[f9-fullscreen] 进入全屏超时——Chrome 状态机疑似卡死，尝试重置');
-      failStreak++;
-      needsReset = true;
-      forceExit();
-      toast(failStreak >= 2 ? '全屏仍无法恢复，建议重启浏览器' : '全屏请求卡住，已尝试重置，请再按一次 F9');
-    } else {
-      failStreak = 0;
-    }
-  }
-
-  // 互斥锁：防快速连按 F9 导致并发 request/exit 把状态机搞乱
-  let toggling = false;
-  async function toggle() {
-    if (toggling) return;
-    toggling = true;
-    try {
-      // 决策用实时 DOM 查询，不依赖事件缓存（fullscreenchange 偶发丢失）
-      if (anyFullscreen()) await exit();
-      else await enter();
-    } finally {
-      toggling = false;
-    }
-  }
-
+  // 真实键盘事件（Chrome 要求用户手势，keydown 监听即手势来源）
   window.addEventListener('keydown', (e) => {
     if (e.key !== 'F9' && e.code !== 'F9') return;
     if (e.repeat) return; // 忽略长按自动重复
@@ -180,8 +152,106 @@
     toggle();
   }, true);
 
-  // Chrome bug mitigation：全屏中页面 reload/导航最容易锁死状态机（crbug 1131659 等）。
-  // 页面卸载前主动退全屏，从源头降低触发概率。
+  // fullscreenchange：同步 lastFsExit（ESC/外部退出也在这里记录，enter 前等过渡完成）
+  document.addEventListener('fullscreenchange', () => {
+    if (!anyFullscreen()) lastFsExit = Date.now();
+    dbg('fullscreenchange →', anyFullscreen() ? 'enter' : 'exit');
+  }, true);
+
+  async function exit() {
+    if (!anyFullscreen()) return;
+    dbg('exit: begin');
+    const p = exitMethod in doc ? doc[exitMethod]() : target()[exitMethod]();
+    const r = await withTimeout(p, 3000);
+    const exited = r === 'ok' || !anyFullscreen() || await waitUntil(() => !anyFullscreen(), 2000);
+    if (exited) {
+      failStreak = 0;
+      lastFsExit = Date.now();
+      dbg('exit: ok');
+      return;
+    }
+    // 退出卡住
+    failStreak++;
+    dbg('exit: stuck, forceExit + wait');
+    forceExit();
+    const ok = await waitUntil(() => !anyFullscreen(), 2000);
+    if (ok) {
+      failStreak = 0;
+      lastFsExit = Date.now();
+    } else {
+      toast(failStreak >= 2 ? '全屏仍无法恢复，建议关闭标签页重新打开' : '退出全屏卡住，已尝试重置，请再按一次 F9');
+    }
+  }
+
+  async function enter() {
+    if (!isSupported()) {
+      console.warn('[f9-fullscreen] document.fullscreenEnabled === false，浏览器/页面禁止了全屏 API');
+      return;
+    }
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      dbg(`enter: attempt ${attempt + 1}/${MAX_ATTEMPTS}`);
+
+      if (targetIsFullscreen()) { failStreak = 0; dbg('enter: already in'); return; }
+
+      // 有别的元素全屏（如游戏内 canvas）先清场
+      if (anyFullscreen()) {
+        await exit();
+        await sleep(SETTLE_MS);
+      }
+
+      // 上次退出全屏（ESC/脚本/外部）后需等退出过渡完成，否则 request 会被
+      // Chrome 静默吞掉或进入"假成功"状态（fullscreenchange 触发但没真全屏）
+      const sinceExit = Date.now() - lastFsExit;
+      if (lastFsExit > 0 && sinceExit < SETTLE_MS) {
+        dbg(`enter: settle wait ${SETTLE_MS - sinceExit}ms`);
+        await sleep(SETTLE_MS - sinceExit);
+      }
+
+      // 重试前强制重置一次状态机（Chrome 卡死时是 no-op，尽力而为）
+      if (attempt > 0) {
+        forceExit();
+        await sleep(400);
+      }
+
+      const r = await withTimeout(target()[requestMethod](), 3000);
+      // promise resolve 不代表 fullscreenElement 已就位，轮询确认真正进入
+      const entered = (r === 'ok' || targetIsFullscreen()) &&
+        await waitUntil(targetIsFullscreen, 1000);
+
+      if (entered) {
+        failStreak = 0;
+        dbg(`enter: ok (attempt ${attempt + 1})`);
+        return;
+      }
+
+      failStreak++;
+      dbg(`enter: failed attempt ${attempt + 1} (${r === TIMED_OUT ? 'timeout' : r})`);
+      if (attempt < MAX_ATTEMPTS - 1) {
+        forceExit();
+        await sleep(400);
+      }
+    }
+
+    // 全部重试失败 → 状态机大概率真卡死（Chrome 进程级，页面侧无法强解）
+    toast(failStreak >= 2 ? '全屏仍无法恢复，建议关闭标签页重新打开' : '全屏请求卡住，已尝试重置，请再按一次 F9');
+    log('enter: gave up after', MAX_ATTEMPTS, 'attempts; anyFs =', anyFullscreen());
+  }
+
+  async function toggle() {
+    if (toggling) return;
+    toggling = true;
+    const started = Date.now();
+    try {
+      if (anyFullscreen()) { await exit(); log('toggle: exit,', Date.now() - started, 'ms'); }
+      else { await enter(); log('toggle: enter,', Date.now() - started, 'ms'); }
+    } finally {
+      toggling = false;
+    }
+  }
+
+  // Chrome bug mitigation：全屏请求 pending 时页面导航最容易锁死状态机（crbug 1131659 等）。
+  // 页面卸载前尽力退出，从源头降低触发概率。
   window.addEventListener('pagehide', () => {
     if (anyFullscreen()) forceExit();
   });
