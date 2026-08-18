@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         雀魂 F9 全屏切换
 // @namespace    adlkt
-// @version      1.4.0
-// @description  在雀魂麻将页面按 F9 切换全屏（实现参考 VueUse useFullscreen）；v1.4：补 game.maj-soul.net 域名、退出稳定窗口防竞态、进入失败自动重试、状态机自愈、诊断日志
+// @version      1.4.1
+// @description  在雀魂麻将页面按 F9 切换全屏（实现参考 VueUse useFullscreen）；v1.4：补 game.maj-soul.net 域名、退出稳定窗口防竞态、进入失败自动重试、状态机自愈、诊断日志；v1.4.1：前缀事件兼容、error/超时分流、探测防御
 // @match        https://game.maj-soul.com/1/*
 // @match        https://game.maj-soul.net/1/*
 // @match        https://mahjongsoul.game.yo-star.com/1/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.4.0';
+  const VERSION = '1.4.1';
   // 详细诊断：控制台执行 localStorage.f9debug='1' 后刷新页面开启；默认只打每次切换结果
   const DEBUG = (() => {
     try { return localStorage.getItem('f9debug') === '1'; } catch { return false; }
@@ -45,7 +45,14 @@
 
   function find(methods) {
     for (const m of methods) {
-      if (m in doc || m in target()) return m;
+      if (m in doc) return m;
+    }
+    // documentElement 理论上在 document-start 已存在，但极端环境（怪异文档/特殊注入）下仍可能为 null，防御性跳过
+    const el = target();
+    if (el) {
+      for (const m of methods) {
+        if (m in el) return m;
+      }
     }
     return undefined;
   }
@@ -139,6 +146,7 @@
   let toggling = false;   // 互斥锁：防快速连按 F9 并发 request/exit
   let failStreak = 0;     // 连续失败计数（第 2 次仍失败时提示刷新/重开标签页）
   let lastFsExit = 0;     // 上次"任何原因"退出全屏的时间戳（ESC/脚本/外部）
+  let lastTimedOut = false; // 上一次 request 是否超时（超时=疑似状态机卡死，重试前重置）
 
   const SETTLE_MS = 500;    // 退出过渡稳定窗口（防 1654512 类 enter/exit 竞态）
   const MAX_ATTEMPTS = 3;   // 进入全屏最大重试次数
@@ -152,11 +160,17 @@
     toggle();
   }, true);
 
-  // fullscreenchange：同步 lastFsExit（ESC/外部退出也在这里记录，enter 前等过渡完成）
-  document.addEventListener('fullscreenchange', () => {
-    if (!anyFullscreen()) lastFsExit = Date.now();
-    dbg('fullscreenchange →', anyFullscreen() ? 'enter' : 'exit');
-  }, true);
+  // fullscreenchange（含前缀版本）：同步 lastFsExit（ESC/外部退出也在这里记录，enter 前等过渡完成）。
+  // 各内核只触发自己支持的那一个事件，重复监听不会重复计数；与上方多浏览器 API 探测链保持一致。
+  const FS_CHANGE_EVENTS = [
+    'fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'msfullscreenchange',
+  ];
+  for (const evt of FS_CHANGE_EVENTS) {
+    document.addEventListener(evt, () => {
+      if (!anyFullscreen()) lastFsExit = Date.now();
+      dbg(evt, '→', anyFullscreen() ? 'enter' : 'exit');
+    }, true);
+  }
 
   async function exit() {
     if (!anyFullscreen()) return;
@@ -208,25 +222,36 @@
         await sleep(SETTLE_MS - sinceExit);
       }
 
-      // 重试前强制重置一次状态机（Chrome 卡死时是 no-op，尽力而为）
-      if (attempt > 0) {
+      // 上一次是超时（疑似状态机卡死）→ 重试前强制重置（Chrome 卡死时是 no-op，尽力而为）；
+      // 上一次是被拒（error）→ 不重置，直接重新请求
+      if (attempt > 0 && lastTimedOut) {
         forceExit();
         await sleep(400);
       }
 
       const r = await withTimeout(target()[requestMethod](), 3000);
-      // promise resolve 不代表 fullscreenElement 已就位，轮询确认真正进入
-      const entered = (r === 'ok' || targetIsFullscreen()) &&
-        await waitUntil(targetIsFullscreen, 1000);
+      dbg(`enter: request → ${r === TIMED_OUT ? 'timeout' : r}`);
 
-      if (entered) {
+      // promise resolve 不代表 fullscreenElement 已就位，轮询确认真正进入
+      if ((r === 'ok' || targetIsFullscreen()) && await waitUntil(targetIsFullscreen, 1000)) {
         failStreak = 0;
         dbg(`enter: ok (attempt ${attempt + 1})`);
         return;
       }
 
+      if (r === 'error') {
+        // 浏览器明确拒绝（手势过期/页面策略/非用户手势触发）：重试大概率同样被拒，
+        // 与其消耗时间盲目重试，不如直接提示用户再按一次（新按键 = 新用户手势）
+        failStreak++;
+        toast('全屏被浏览器拒绝，请再按一次 F9');
+        log('enter: rejected by browser; anyFs =', anyFullscreen());
+        return;
+      }
+
+      // TIMED_OUT 或"promise ok 但未真正进入"：状态机疑似卡住 → 重试
+      lastTimedOut = r === TIMED_OUT;
       failStreak++;
-      dbg(`enter: failed attempt ${attempt + 1} (${r === TIMED_OUT ? 'timeout' : r})`);
+      dbg(`enter: attempt ${attempt + 1} 未成功，准备重试`);
       if (attempt < MAX_ATTEMPTS - 1) {
         forceExit();
         await sleep(400);
