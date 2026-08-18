@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         雀魂 F9 全屏切换
 // @namespace    adlkt
-// @version      1.4.1
-// @description  在雀魂麻将页面按 F9 切换全屏（实现参考 VueUse useFullscreen）；v1.4：补 game.maj-soul.net 域名、退出稳定窗口防竞态、进入失败自动重试、状态机自愈、诊断日志；v1.4.1：前缀事件兼容、error/超时分流、探测防御
+// @version      1.4.2
+// @description  在雀魂麻将页面按 F9 切换全屏（实现参考 VueUse useFullscreen）；v1.4：补 game.maj-soul.net 域名、退出稳定窗口防竞态、进入失败自动重试、状态机自愈、诊断日志；v1.4.1：前缀事件兼容、error/超时分流、探测防御；v1.4.2：visibilitychange 失焦退全屏兜底
 // @match        https://game.maj-soul.com/1/*
 // @match        https://game.maj-soul.net/1/*
 // @match        https://mahjongsoul.game.yo-star.com/1/*
@@ -15,7 +15,7 @@
 (function () {
   'use strict';
 
-  const VERSION = '1.4.1';
+  const VERSION = '1.4.2';
   // 详细诊断：控制台执行 localStorage.f9debug='1' 后刷新页面开启；默认只打每次切换结果
   const DEBUG = (() => {
     try { return localStorage.getItem('f9debug') === '1'; } catch { return false; }
@@ -171,6 +171,18 @@
       dbg(evt, '→', anyFullscreen() ? 'enter' : 'exit');
     }, true);
   }
+
+  // Chromium 已知行为：全屏状态下窗口失焦（Alt+Tab/切 Space）会自动退出全屏，
+  // 但页面隐藏期间 fullscreenchange 可能不派发 → lastFsExit 漏记 → 切回后秒按 F9
+  // 可能撞上退出过渡竞态。这里在 hidden 时无条件记录时间戳：若全屏确实被退了，
+  // enter 会走 settle wait；若没退（anyFullscreen 仍 true），toggle 走 exit 分支用不到它；
+  // 唯一代价是非全屏时切走切回后首次 F9 多等 SETTLE_MS，无感知。
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      lastFsExit = Date.now();
+      dbg('visibilitychange(hidden) → lastFsExit =', lastFsExit);
+    }
+  }, true);
 
   async function exit() {
     if (!anyFullscreen()) return;
