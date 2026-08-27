@@ -83,12 +83,12 @@ def _generate_liqi_json():
 def update(max_version, liqi_version, token):
     req = _download_liqi_latest_release(token)
     if req.headers.get("X-RateLimit-Remaining") == "0":
-        logger.error("""\
-github api额度用完，无法更新liqi文件！请尝试以下方法：\n
-1. 在 ./config/settings.yaml 中填入你的Github Token后重试\n
-2. 在 https://github.com/Avenshy/AutoLiqi/releases/latest 手动下载 max_data.json 和 liqi.desc ，放入 ./proto 中，覆盖同名文件，并将 ./config/settings.yaml 中的 liqi_version 字段改为最新版本号\n
-3. 使用或更换代理\n
-4. 等待1个小时后再试""")
+        # 匿名 API 额度(60次/h)耗尽：无法确认远端版本，跳过本次检查。
+        # 本地文件可能已是最新，不应误报"无法更新"。
+        logger.warning("GitHub API 额度已用完，跳过 liqi 更新检查（本地版本：{}）。", liqi_version)
+        logger.warning("如需手动更新：前往 https://github.com/Avenshy/MajsoulData/releases/latest 下载 "
+                       "max_data.yaml 放入 ./config/、liqi.desc 放入 ./proto/（均覆盖同名文件），"
+                       "并将 ./config/settings.yaml 的 liqi.liqi_version 改为最新版本号")
         return liqi_version
     
     liqi = req.json()
