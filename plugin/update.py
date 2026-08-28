@@ -4,6 +4,7 @@ from pathlib import Path
 from loguru import logger
 from google.protobuf import descriptor_pb2
 from google.protobuf import descriptor_pool
+from ruamel.yaml import YAML
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LIQI_FILES = {"max_data.yaml": "config", "liqi.desc": "proto"}
@@ -48,9 +49,38 @@ def _download_liqi_assets(release: dict, token: str):
         req = requests.get(
             item["browser_download_url"], timeout=10, headers=_auth_headers(token)
         )
+        # 不校验状态码会把 403/404 错误页写进本地文件，破坏原本可用的 liqi.desc
+        req.raise_for_status()
         blobs[name] = req.content
         logger.success(f"下载 {name} 成功！")
+    _validate_blobs(blobs)
     return blobs
+
+
+def _validate_blobs(blobs: dict) -> None:
+    """写盘前校验内容合法性：desc 必须是可解析的 FileDescriptorSet，
+    max_data 必须是合法 YAML dict。校验失败抛异常，本地旧文件保持不动。"""
+    fds = descriptor_pb2.FileDescriptorSet()
+    try:
+        fds.ParseFromString(blobs["liqi.desc"])
+        if not fds.file:
+            raise ValueError("无 file 条目")
+    except Exception as e:
+        raise ValueError(f"liqi.desc 内容校验失败（非 FileDescriptorSet？）: {e}")
+    try:
+        data = YAML().load(blobs["max_data.yaml"])
+        if not isinstance(data, dict):
+            raise ValueError("顶层不是 dict")
+    except Exception as e:
+        raise ValueError(f"max_data.yaml 内容校验失败（非合法 YAML？）: {e}")
+
+
+def _atomic_write(name: str, content: bytes) -> None:
+    """tmp 写入 + rename 原子替换：中途失败不会留下半截/损坏的目标文件。"""
+    target = BASE_DIR / LIQI_FILES[name] / name
+    tmp = target.with_suffix(target.suffix + ".tmp")
+    tmp.write_bytes(content)
+    tmp.replace(target)
 
 def _generate_liqi_json():
     fds = descriptor_pb2.FileDescriptorSet()
@@ -99,8 +129,7 @@ def update(max_version, liqi_version, token):
     else:
         blobs = _download_liqi_assets(liqi, token)
         for name in LIQI_FILES:
-            with open(BASE_DIR / LIQI_FILES[name] / name, "wb") as f:
-                f.write(blobs[name])
+            _atomic_write(name, blobs[name])
         _generate_liqi_json()
         logger.success(f"liqi文件更新成功：{new_version}")
     
