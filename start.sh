@@ -33,7 +33,9 @@ cleanup() {
     # 兜底：无论任何退出路径，确保 mitmproxy 进程被终止、端口被释放
     [ -n "${MPID:-}" ] && kill "$MPID" 2>/dev/null || true
     [ -n "${PACD_PID:-}" ] && kill "$PACD_PID" 2>/dev/null || true
-    networksetup -setautoproxyurl "$(net_service)" off 2>/dev/null || true
+    # 关闭代理必须用 -setautoproxystate（-setautoproxyurl 是设 PAC 地址，把 "off"
+    # 当 URL 传入会留下 Enabled: Yes + URL: off 的脏状态，PAC 失效）
+    networksetup -setautoproxystate "$(net_service)" off 2>/dev/null || true
     echo "→ 已清理 PAC 服务和系统代理设置"
 }
 trap cleanup INT TERM EXIT
