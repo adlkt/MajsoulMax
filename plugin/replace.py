@@ -14,7 +14,6 @@ class replace:
         self.settings = self.yaml.load('''\
 config:
   http: []
-  lq: []
 ''')
         try:
             with open(BASE_DIR / 'config' / 'settings.replace.yaml', 'r', encoding='utf8') as f:

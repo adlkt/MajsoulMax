@@ -14,6 +14,9 @@ class mod:
     def __init__(self,version):
         self.version = version
         self.safe = {}
+        # loginBeat 之前若收到 fake 类 Req（如换角色），main() 会伪造
+        # ReqLoginBeat 保活包；先给空串兜底，防 AttributeError
+        self.contract = ''
         self.yaml = YAML()
         self.max_data = {}
         self.LoadSettings()
@@ -87,6 +90,13 @@ config:
                 new_views[idx] = {'name': '', 'values': list(v)}
         self.settings['config']['views'] = new_views
 
+    def _current_views(self) -> dict:
+        """当前装扮页。views_index 来自服务端 useCommonView.index，无范围保证，
+        越界时回退 0 页（_migrate_views_format 保证 0 页存在），防 KeyError。"""
+        views = self.settings['config']['views']
+        idx = self.settings['config']['views_index']
+        return views.get(idx) or views.get(0) or {'name': '', 'values': []}
+
     def SaveSettings(self):
         # 直接写盘（2026-08-13 起不再生成 .bak，用户明确要求）
         target = BASE_DIR / 'config' / 'settings.mod.yaml'
@@ -125,7 +135,6 @@ config:
                 # Req类型必定是客户端发出的消息
                 assert (message.from_client)
                 assert (msg_id < 1 << 16)
-                assert (msg_id not in liqi_proto.res_type)
                 handler_name = _REQ_HANDLERS.get(msg_block.method_name)
                 if handler_name is not None:
                     fake = False
@@ -461,7 +470,7 @@ config:
             player.nickname = cfg['nickname']
         player.title = cfg['title']
         frame = self._apply_view_slots(
-            views_field, cfg['views'][cfg['views_index']]['values'])
+            views_field, self._current_views()['values'])
         player.verified = cfg['verified']
         return frame
 
@@ -492,7 +501,7 @@ config:
         else:
             data.account.avatar_id = self._default_skin_id(
                 self.settings['config']['character'])
-        for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
+        for view in self._current_views()['values']:
             if view.get('slot') == 5:
                 data.account.avatar_frame = view.get('item_id', 0)
         if self.settings['config']['nickname'] != '':
@@ -573,9 +582,9 @@ config:
             modify = True
             data.account.avatar_id = self.settings['config'][
                 'characters'][self.settings['config']['character']]
-            for view in self.settings['config']['views'][self.settings['config']['views_index']]['values']:
-                if view['slot'] == 5:
-                    data.account.avatar_frame = view['item_id']
+            for view in self._current_views()['values']:
+                if view.get('slot') == 5:
+                    data.account.avatar_frame = view.get('item_id', 0)
             if self.settings['config']['nickname'] != '':
                 data.account.nickname = self.settings['config']['nickname']
             data.account.title = self.settings['config']['title']
@@ -799,7 +808,3 @@ _RES_HANDLERS = {
     '.lq.Lobby.fetchGameRecord': '_res_fetch_game_record',
     '.lq.Lobby.fetchRandomCharacter': '_res_fetch_random_character',
 }
-
-
-if __name__ == '__main__':
-    mod.mod()

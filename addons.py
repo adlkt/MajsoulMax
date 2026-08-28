@@ -135,6 +135,9 @@ class MajsoulMaxAddon:
             else:
                 logger.debug(f"已发送（未解析）：{message.content}")
             return
+        # mod 处理结果标志：统一初始化，防止 injected 消息路径未定义时
+        # 下方 `MOD_ENABLE and modify` 触发 UnboundLocalError
+        modify = drop = inject = False
         # 解析proto消息
         if MOD_ENABLE:
             # 如果启用mod，就把WS消息丢进mod里

@@ -68,8 +68,8 @@ class LiqiProto:
             msg_block.ParseFromString(buf[3:])
             if msg_type == MsgType.Req:
                 assert (msg_id < 1 << 16)
-                # assert(len(msg_block) == 2)
-                assert (msg_id not in self.res_type)
+                # 不做 msg_id 去重断言：窗口循环复用 + 断线重连后旧条目残留，
+                # 覆盖写即可；卡断言反而会让重连后的请求全部解析失败
                 method_name = msg_block.method_name
                 req_type = self.rpc_map[method_name]["req"]
                 liqi_pb2_req = getattr(liqi_pb2, req_type.lstrip(".lq."))

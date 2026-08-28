@@ -150,8 +150,9 @@ class TestReqFlow:
         assert len(called) == 1  # inject.websocket 被调用
         assert called[0][0] == "inject.websocket"
 
-    def test_skin_change_without_login_does_not_crash(self, addon, _fake_master):
-        """未登录就改皮肤：mod 抛异常被 addons 捕获，不中断 addon。"""
+    def test_skin_change_without_login_uses_empty_contract(self, addon, _fake_master):
+        """未登录就改皮肤：contract 有空串兜底，不再抛 AttributeError，
+        正常走 fake 路径——请求被顶替为 loginBeat（空 contract）发给服务器。"""
         called = []
         _fake_master.commands.call = lambda *a, **k: called.append(a)
         req = liqi_pb2.ReqChangeCharacterSkin()
@@ -162,9 +163,11 @@ class TestReqFlow:
         blk.data = req.SerializeToString()
         buf = b"\x02" + b"\x01\x00" + blk.SerializeToString()
         msg = FakeMessage(buf, from_client=True)
+        # 修复前：mod 抛 AttributeError 被 addons 捕获跳过，无 inject
+        # 修复后：contract 兜底空串，fake 路径正常执行并注入 NotifyAccountUpdate
         addon.websocket_message(_make_flow(
             host="game.maj-soul.com", messages=[msg]))
-        assert len(called) == 0  # inject 未触发但也没崩
+        assert len(called) == 1  # inject.websocket（NotifyAccountUpdate）被调用
 
 
 class TestSensitiveLogRedaction:

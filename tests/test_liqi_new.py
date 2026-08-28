@@ -132,12 +132,16 @@ class TestLiqiProtoParse:
         with pytest.raises(AssertionError):
             lp.parse(SimpleNamespace(content=buf, from_client=False))
 
-    def test_msg_id_reuse_raises(self):
-        """同一 msg_id 重复 Req：assert msg_id not in res_type 应失败。"""
+    def test_msg_id_reuse_overwrites(self):
+        """同一 msg_id 重复 Req：覆盖写 res_type（重连后窗口循环复用是合法场景）。"""
         lp = liqi_new.LiqiProto()
         req_payload = liqi_pb2.ReqAuthGame()
         buf = b"\x02" + struct.pack("<H", 3) + _base_message(
             ".lq.FastTest.authGame", req_payload.SerializeToString())
         lp.parse(SimpleNamespace(content=buf, from_client=True))
-        with pytest.raises(AssertionError):
-            lp.parse(SimpleNamespace(content=buf, from_client=True))
+        # 复用同一 msg_id 发另一个 method：不抛异常，登记覆盖为最新
+        buf2 = b"\x02" + struct.pack("<H", 3) + _base_message(
+            ".lq.Lobby.fetchBagInfo", req_payload.SerializeToString())
+        r = lp.parse(SimpleNamespace(content=buf2, from_client=True))
+        assert r["method"] == ".lq.Lobby.fetchBagInfo"
+        assert lp.res_type[3][0] == ".lq.Lobby.fetchBagInfo"

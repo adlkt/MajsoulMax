@@ -192,3 +192,25 @@ class TestSaveSettings:
         # 不再生成 .bak 备份
         bak = config_dir / "settings.mod.yaml.bak"
         assert not bak.exists(), "已移除 .bak 备份逻辑"
+
+
+class TestCurrentViews:
+    """_current_views：views_index 越界回退 0 页（服务端 useCommonView.index 无范围保证）。"""
+
+    def test_valid_index(self, pure_mod):
+        pure_mod.settings["config"] = {
+            "views_index": 3,
+            "views": {i: {"name": f"v{i}", "values": []} for i in range(10)},
+        }
+        assert pure_mod._current_views()["name"] == "v3"
+
+    def test_out_of_range_falls_back_to_zero(self, pure_mod):
+        pure_mod.settings["config"] = {
+            "views_index": 99,
+            "views": {i: {"name": f"v{i}", "values": []} for i in range(10)},
+        }
+        assert pure_mod._current_views()["name"] == "v0"
+
+    def test_missing_zero_page_returns_empty(self, pure_mod):
+        pure_mod.settings["config"] = {"views_index": 99, "views": {}}
+        assert pure_mod._current_views() == {"name": "", "values": []}
