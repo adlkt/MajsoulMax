@@ -127,7 +127,7 @@ config:
                 json=data, verify=False, timeout=3,
             )
             response.raise_for_status()
-            logger.success('[helper] 消息已发送')
+            logger.debug('[helper] 消息已发送')
         except requests.RequestException as e:
             logger.warning(f"[helper] 发送失败（小助手不可达？）：{e}")
 

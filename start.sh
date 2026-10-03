@@ -28,9 +28,6 @@ if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "→ 同步依赖 (uv sync)"
 uv sync --quiet
 
-echo "→ 请在 Clash Verge 中启用 TUN 并加载 clash-verge.js"
-echo "→ 启动改包服务，监听 127.0.0.1:${PORT}（Ctrl+C 停止）"
 exec uv run python addons.py "$PORT"

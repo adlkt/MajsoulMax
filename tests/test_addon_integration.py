@@ -184,24 +184,7 @@ class TestReqFlow:
         assert len(called) == 1  # inject.websocket（NotifyAccountUpdate）被调用
 
 
-class TestSensitiveLogRedaction:
-    """请求方向凭证脱敏：oauth2Login/login/loginBeat 只打 method+len，不打内容。"""
-
-    @pytest.mark.parametrize("method", [
-        ".lq.Lobby.oauth2Login",  # token 登录，请求含凭证
-        ".lq.Lobby.login",        # 账号登录
-        ".lq.Lobby.loginBeat",    # 心跳，含会话 contract
-    ])
-    def test_sensitive_methods_redacted(self, method):
-        line = addons._redacted_log(method, 42)
-        assert line is not None
-        assert method in line
-        assert "42" in line
-
-    def test_plain_methods_not_redacted(self):
-        assert addons._redacted_log(".lq.Lobby.fetchTitleList", 42) is None
-        assert addons._redacted_log(".lq.NotifyAccountLevelChange", 42) is None
-
+class TestCredentialRequests:
     def test_oauth2_login_request_flows_without_error(self, addon):
         """oauth2Login 请求走完整 addon 链路：不抛异常（日志脱敏）。"""
         req = liqi_pb2.ReqOauth2Login()
@@ -344,6 +327,77 @@ def test_addon_shutdown_closes_helper():
         close=lambda: closed.append(True)))
     addon.done()
     assert closed == [True]
+
+
+def test_routine_game_messages_are_quiet_at_info(addon):
+    from loguru import logger
+
+    lines = []
+    sink = logger.add(lambda message: lines.append(str(message)), level='INFO')
+    try:
+        flow = _make_flow(messages=[_rpc_message(
+            '.lq.Lobby.loginBeat', liqi_pb2.ReqLoginBeat(contract='private-contract'))])
+        addon.websocket_message(flow)
+        for _ in range(20):
+            notification = liqi_pb2.NotifyAccountLevelChange()
+            flow.websocket.messages.append(FakeMessage(_notify_buf(
+                '.lq.NotifyAccountLevelChange', notification.SerializeToString())))
+            addon.websocket_message(flow)
+        assert lines == []
+        flow.websocket.messages.append(FakeMessage(b'\x02\xff\xff'))
+        addon.websocket_message(flow)
+        assert any('error' in line for line in lines)
+    finally:
+        logger.remove(sink)
+
+
+def test_debug_messages_summarize_without_payload(addon):
+    from loguru import logger
+
+    lines = []
+    sink = logger.add(lambda message: lines.append(str(message)), level='DEBUG')
+    try:
+        addon.websocket_message(_make_flow(messages=[_rpc_message(
+            '.lq.Lobby.loginBeat', liqi_pb2.ReqLoginBeat(contract='private-contract'))]))
+        addon.websocket_message(_make_flow(path='/ob', messages=[FakeMessage(b'private-ob-data')]))
+        assert len(lines) == 2
+        assert '.lq.Lobby.loginBeat' in lines[0]
+        assert 'private-contract' not in ''.join(lines)
+        assert 'private-ob-data' not in ''.join(lines)
+        assert all('len=' in line for line in lines)
+    finally:
+        logger.remove(sink)
+
+
+def test_game_traffic_summary_uses_real_rpc_messages(addon, monkeypatch):
+    from plugin.traffic import TrafficStats
+
+    now = [0.0]
+    lines = []
+    addon.traffic = TrafficStats(clock=lambda: now[0])
+    monkeypatch.setattr(addons.logger, 'info',
+                        lambda template, *args: lines.append(template.format(*args)))
+    request = _rpc_message('.lq.Lobby.loginBeat', liqi_pb2.ReqLoginBeat())
+    flow = _make_flow(messages=[request])
+    addon.websocket_message(flow)
+    now[0] = 0.05
+    response = _rpc_message('', liqi_pb2.ResCommon())
+    flow.websocket.messages.append(response)
+    addon.websocket_message(flow)
+    injected = FakeMessage(_notify_buf(
+        '.lq.NotifyAccountLevelChange', liqi_pb2.NotifyAccountLevelChange().SerializeToString()))
+    injected.injected = True
+    flow.websocket.messages.append(injected)
+    addon.websocket_message(flow)
+    assert lines == []
+    now[0] = 10
+    addon.websocket_message(_make_flow(path='/ob', messages=[FakeMessage(b'ob-data')]))
+    assert len(lines) == 1
+    assert '↑1包' in lines[0]
+    assert '↓2包' in lines[0]
+    assert '延迟 50ms' in lines[0]
+    addon.websocket_end(flow)
+    assert not addon.traffic.pending
 
 
 class TestReplaceFallback:

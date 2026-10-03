@@ -9,6 +9,32 @@ import pytest
 import addons
 
 
+def test_ctrl_c_exits_without_traceback_and_runs_cleanup():
+    script = '''
+import asyncio
+import os
+import signal
+import addons
+
+addons.create_addon = lambda: object()
+async def service(*args):
+    loop = asyncio.get_running_loop()
+    loop.call_later(0.05, os.kill, os.getpid(), signal.SIGINT)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        print("CLEANED")
+addons.start_mitm = service
+addons.main()
+'''
+    result = subprocess.run([sys.executable, '-c', script], cwd=Path(addons.__file__).parent,
+                            capture_output=True, text=True, timeout=10)
+    assert 'CLEANED' in result.stdout
+    assert result.returncode == 0, result.stderr
+    assert 'Traceback' not in result.stderr
+    assert '改包服务已停止' in result.stdout
+
+
 def test_import_does_not_initialize_runtime():
     script = '''
 import sys

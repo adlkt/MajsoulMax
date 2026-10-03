@@ -698,7 +698,7 @@ config:
 主视角牌谱链接（匿名）: {self.encodePaipuUUID(uuid)}_a{self.encode_account_id(account.account_id)}_2\n\n'
 
         result+='注意：只有在同一服务器才能添加好友！'
-        logger.success(result)
+        logger.debug(result)
         return HandlerResult(modify=modify, data=data)
 
     def _res_fetch_random_character(self, msg_block):

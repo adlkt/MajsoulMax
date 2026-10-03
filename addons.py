@@ -1,4 +1,5 @@
 import asyncio
+import os
 import signal
 import sys
 from functools import partial
@@ -14,6 +15,7 @@ from ruamel.yaml import YAML, YAMLError
 from plugin import update
 from plugin.results import ModResult
 from plugin.storage import save_yaml
+from plugin.traffic import TrafficStats
 
 BASE_DIR = Path(__file__).resolve().parent
 REPLACE_DIR = BASE_DIR / "replace"
@@ -123,6 +125,11 @@ class MajsoulMaxAddon:
         self.helper_plugin = helper_plugin
         self.replace_plugin = replace_plugin
         self.connections = {}
+        self.traffic = TrafficStats()
+
+    def running(self):
+        logger.success("改包服务已启动，监听 {}:{}（Ctrl+C 停止）",
+                       ctx.options.listen_host, ctx.options.listen_port)
 
     def _connection(self, flow):
         if flow.id not in self.connections:
@@ -132,9 +139,11 @@ class MajsoulMaxAddon:
 
     def websocket_end(self, flow: http.HTTPFlow):
         self.connections.pop(flow.id, None)
+        self.traffic.disconnect(flow.id)
 
     def done(self):
         self.connections.clear()
+        self.traffic.clear()
         if self.helper_plugin is not None:
             self.helper_plugin.close()
 
@@ -144,12 +153,13 @@ class MajsoulMaxAddon:
         if not any(k in flow.request.host for k in self._hosts):
             return
         message = flow.websocket.messages[-1]
+        if not message.injected:
+            self.traffic.packet(len(message.content), message.from_client)
         # 不解析ob消息
         if flow.request.path == "/ob":
-            if message.from_client is False:
-                logger.debug(f"接收到（未解析）：{message.content}")
-            else:
-                logger.debug(f"已发送（未解析）：{message.content}")
+            logger.debug("{} /ob（未解析） len={}B",
+                         "发送" if message.from_client else "接收", len(message.content))
+            self.traffic.report()
             return
         liqi_proto, mod_plugin = self._connection(flow)
         modification = ModResult()
@@ -173,28 +183,24 @@ class MajsoulMaxAddon:
             direction = "接收到" if message.from_client is False else "已发送"
             logger.error(f"{direction}(error) len={len(message.content)}B: {e}")
         else:
+            if not message.injected and not modification.drop:
+                self.traffic.rpc(flow.id, result)
+            status = (
+                "注入" if message.injected else
+                "丢弃" if modification.drop else
+                "修改" if modification.modify else "透传"
+            )
+            logger.debug("{} {} [{}] len={}B",
+                         "发送" if message.from_client else "接收",
+                         result['method'], status, len(message.content))
             if message.from_client is False:
-                if message.injected:
-                    logger.success(f"接收到(injected)：{result}")
-                elif modification.modify:
-                    logger.success(f"接收到(modify)：{result}")
-                elif modification.drop:
-                    logger.success(f"接收到(drop)：{result}")
-                else:
-                    logger.info(f"接收到：{result}")
                 if self.helper_plugin is not None:
                     # 如果启用helper，就把消息丢进helper里（异常不能中断消息流）
                     try:
                         self.helper_plugin.main(result)
                     except Exception as e:
                         logger.warning(f"helper 处理异常，跳过: {e}")
-            else:
-                if modification.modify:
-                    logger.success(f"已发送(modify)：{result}")
-                else:
-                    # 凭证类请求（oauth2Login/login/loginBeat）只打 method+len，防止 token 落日志
-                    redacted = _redacted_log(result['method'], len(message.content))
-                    logger.info(redacted if redacted is not None else f"已发送：{result}")
+        self.traffic.report()
 
     def request(self, flow: http.HTTPFlow):
         # 在捕获到HTTP消息时触发
@@ -217,23 +223,7 @@ class MajsoulMaxAddon:
             logger.warning("替换资源为空，保留原请求：{}", path)
             return
         flow.response = http.Response.make(200, body)
-        logger.success(f"已替换(replace)：{flow.request.path}")
-
-# 请求方向携带凭证/会话标识的方法：日志只打 method+len，不打印内容。
-# 368697d 只防了错误路径（解析失败只记长度），成功路径此前会完整打印
-# oauth2Login 请求（含 access_token）到终端日志。
-_SENSITIVE_METHODS = frozenset((
-    ".lq.Lobby.oauth2Login",  # token 登录，请求含凭证
-    ".lq.Lobby.login",        # 账号登录
-    ".lq.Lobby.loginBeat",    # 心跳，含会话 contract
-))
-
-
-def _redacted_log(method: str, content_len: int) -> str | None:
-    """凭证类方法返回脱敏日志行，其余返回 None（调用方打全量）。"""
-    if method in _SENSITIVE_METHODS:
-        return f"{method}（内容脱敏，len={content_len}B）"
-    return None
+        logger.debug("已替换资源：{}", flow.request.path)
 
 
 async def start_mitm(port: int = 23410, addon=None):
@@ -252,7 +242,6 @@ async def start_mitm(port: int = 23410, addon=None):
         "flow_detail": 0,
         "termlog_verbosity": "warn",
     }
-    logger.info("改包服务已配置，流量路由请使用 Clash Verge TUN 和 clash-verge.js")
     master = DumpMaster(opts)
     master.options.update(**extra)
     # 加载自定义插件
@@ -274,11 +263,16 @@ async def start_mitm(port: int = 23410, addon=None):
 def main():
     logger.remove()
     logger.add(stdout, colorize=True,
-               format="<cyan>[{time:HH:mm:ss.SSS}]</cyan> <level>{message}</level>")
+               level=os.environ.get("MAJSOUL_LOG_LEVEL", "INFO").upper(),
+               format="<cyan>[{time:HH:mm:ss}]</cyan> <level>{level: <7} {message}</level>")
     # 支持 start.sh 传入端口：uv run python addons.py 23410
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 23410
-    addon = create_addon()
-    asyncio.run(start_mitm(port, addon))
+    try:
+        addon = create_addon()
+        asyncio.run(start_mitm(port, addon))
+    except KeyboardInterrupt:
+        # asyncio.run 在任务取消、清理完成后才向外抛出 Ctrl+C。
+        logger.info("改包服务已停止")
 
 
 if __name__ == "__main__":
