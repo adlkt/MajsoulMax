@@ -3,11 +3,52 @@
 _validate_blobs 是写盘前的最后防线：GitHub 返回 403/404 错误页时，
 错误内容必须在校验阶段被拦下，而不是写坏本地可用的 liqi.desc。
 """
+from types import SimpleNamespace
+
 import pytest
 from google.protobuf import descriptor_pb2
 from ruamel.yaml import YAML
 
+from plugin import update as updater
 from plugin.update import _validate_blobs
+
+
+def _mock_releases(monkeypatch):
+    monkeypatch.setattr(updater, '_download_liqi_latest_release', lambda token: SimpleNamespace(
+        headers={}, raise_for_status=lambda: None,
+        json=lambda: {'tag_name': 'same-version'}))
+    monkeypatch.setattr(updater, '_download_max_latest_release', lambda token: SimpleNamespace(
+        headers={}, raise_for_status=lambda: None,
+        json=lambda: {'tag_name': 'max-version'}))
+
+
+def test_missing_data_downloads_even_when_version_matches(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater, 'BASE_DIR', tmp_path)
+    _mock_releases(monkeypatch)
+    downloads = []
+
+    def download(release, token):
+        downloads.append(release)
+        return {'liqi.desc': _make_valid_desc(), 'max_data.yaml': _make_valid_max_data()}
+
+    monkeypatch.setattr(updater, '_download_liqi_assets', download)
+    assert updater.update('max-version', 'same-version', '') == 'same-version'
+    assert len(downloads) == 1
+    assert (tmp_path / 'proto/liqi.desc').is_file()
+    assert (tmp_path / 'proto/liqi.json').is_file()
+    assert (tmp_path / 'config/max_data.yaml').is_file()
+
+
+def test_missing_rpc_map_regenerated_without_download(tmp_path, monkeypatch):
+    monkeypatch.setattr(updater, 'BASE_DIR', tmp_path)
+    (tmp_path / 'proto').mkdir()
+    (tmp_path / 'config').mkdir()
+    (tmp_path / 'proto/liqi.desc').write_bytes(_make_valid_desc())
+    (tmp_path / 'config/max_data.yaml').write_bytes(_make_valid_max_data())
+    _mock_releases(monkeypatch)
+    monkeypatch.setattr(updater, '_download_liqi_assets', lambda *args: pytest.fail('unexpected download'))
+    updater.update('max-version', 'same-version', '')
+    assert (tmp_path / 'proto/liqi.json').is_file()
 
 
 def _make_valid_desc() -> bytes:

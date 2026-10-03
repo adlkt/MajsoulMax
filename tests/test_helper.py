@@ -1,30 +1,33 @@
-"""plugin/helper.py 测试：请求健壮性（timeout + 异常隔离）。
+"""小助手发送测试：网络隔离、顺序、有界队列和退出；所有请求均 mock。"""
+from threading import Event, Thread
+from types import SimpleNamespace
 
-helper.__new__ 绕过 __init__（LoadSettings 读不到配置时会 SaveSettings 写盘），
-注入最小配置；requests.post 全部 mock，不做网络 I/O。
-"""
 import pytest
 import requests
-from ruamel.yaml import YAML
 
 from plugin.helper import helper
 
 
 @pytest.fixture
-def test_helper(monkeypatch, tmp_path):
-    h = helper.__new__(helper)
-    h.yaml = YAML()
-    h.settings = {"config": {"api_url": "https://localhost:12121/"}}
-    h.method = [".lq.Lobby.login", ".lq.ActionPrototype"]  # 测试用到的最小集合
-    h.action = ["ActionLiqi"]
-    target = tmp_path / "settings.helper.yaml"
+def test_helper(monkeypatch):
+    def load_settings(self):
+        self.settings = {"config": {"api_url": "https://localhost:12121/"}}
 
-    def fake_save():
-        with open(target, "w", encoding="utf-8") as f:
-            h.yaml.dump(h.settings, f)
+    monkeypatch.setattr(helper, "LoadSettings", load_settings)
+    h = helper(queue_size=2)
+    yield h
+    h.close()
+    if h._worker is not None:
+        h._worker.join(timeout=5)
+        assert not h._worker.is_alive()
 
-    monkeypatch.setattr(h, "SaveSettings", fake_save)
-    return h
+
+def _wait_for_queue(h):
+    done = Event()
+    waiter = Thread(target=lambda: (h._queue.join(), done.set()), daemon=True)
+    waiter.start()
+    assert done.wait(5), "helper sender did not finish queued messages"
+    waiter.join()
 
 
 class TestPostRobustness:
@@ -69,10 +72,11 @@ class TestPostRobustness:
         sent = []
         monkeypatch.setattr(
             "plugin.helper.requests.post",
-            lambda *a, **k: sent.append((a, k)),
+            lambda *a, **k: (sent.append((a, k)), SimpleNamespace(raise_for_status=lambda: None))[1],
         )
 
         test_helper.main({"method": ".lq.Lobby.login", "data": {"account": "x"}})
+        _wait_for_queue(test_helper)
         assert len(sent) == 1
 
         test_helper.main({"method": ".lq.NotifySomething", "data": {}})
@@ -83,7 +87,7 @@ class TestPostRobustness:
         sent = []
         monkeypatch.setattr(
             "plugin.helper.requests.post",
-            lambda *a, **k: sent.append((a, k)),
+            lambda *a, **k: (sent.append((a, k)), SimpleNamespace(raise_for_status=lambda: None))[1],
         )
 
         test_helper.main({
@@ -91,4 +95,139 @@ class TestPostRobustness:
             "data": {"name": "ActionLiqi", "data": {"liqi": {"tile": 30}}},
         })
 
+        _wait_for_queue(test_helper)
         assert len(sent) == 2  # 主消息 + liqi 补发
+        assert sent[0][1]['json'] == {'liqi': {'tile': 30}}
+        assert sent[1][1]['json'] == {'tile': 30}
+
+
+def test_slow_request_does_not_block_main_and_keeps_order(test_helper, monkeypatch):
+    entered, release, returned = Event(), Event(), Event()
+    sent = []
+
+    def post(url, **kwargs):
+        sent.append(kwargs['json'])
+        entered.set()
+        assert release.wait(5)
+        return SimpleNamespace(raise_for_status=lambda: None)
+
+    monkeypatch.setattr('plugin.helper.requests.post', post)
+    producer = Thread(target=lambda: (
+        test_helper.main({'method': '.lq.Lobby.login', 'data': {'order': 1}}),
+        returned.set()))
+    producer.start()
+    try:
+        assert entered.wait(5)
+        assert returned.wait(1), 'main waited for the HTTP request'
+        test_helper.main({'method': '.lq.Lobby.login', 'data': {'order': 2}})
+        assert sent == [{'order': 1}]
+    finally:
+        release.set()
+        producer.join(timeout=5)
+    _wait_for_queue(test_helper)
+    assert sent == [{'order': 1}, {'order': 2}]
+
+
+def test_queue_full_drops_whole_event_and_uses_snapshot(test_helper, monkeypatch):
+    entered, release = Event(), Event()
+    sent, warnings = [], []
+
+    def post(url, **kwargs):
+        sent.append(kwargs['json'])
+        entered.set()
+        assert release.wait(5)
+        return SimpleNamespace(raise_for_status=lambda: None)
+
+    monkeypatch.setattr('plugin.helper.requests.post', post)
+    monkeypatch.setattr('plugin.helper.logger.warning', lambda *args: warnings.append(args))
+    test_helper.main({'method': '.lq.Lobby.login', 'data': {'order': 1}})
+    try:
+        assert entered.wait(5)
+        data = {'nested': {'value': 2}}
+        test_helper.main({'method': '.lq.Lobby.login', 'data': data})
+        data['nested']['value'] = 999
+        test_helper.main({'method': '.lq.Lobby.login', 'data': {'order': 3}})
+        test_helper.main({'method': '.lq.ActionPrototype',
+                          'data': {'name': 'ActionLiqi', 'data': {'liqi': {'order': 4}}}})
+        assert test_helper._queue.qsize() == 2
+        assert len(warnings) == 1
+    finally:
+        release.set()
+    _wait_for_queue(test_helper)
+    assert sent == [{'order': 1}, {'nested': {'value': 2}}, {'order': 3}]
+
+
+def test_close_discards_pending_messages_without_waiting(test_helper, monkeypatch):
+    entered, release = Event(), Event()
+    sent = []
+
+    def post(url, **kwargs):
+        sent.append(kwargs['json'])
+        entered.set()
+        assert release.wait(5)
+        return SimpleNamespace(raise_for_status=lambda: None)
+
+    monkeypatch.setattr('plugin.helper.requests.post', post)
+    test_helper.main({'method': '.lq.Lobby.login', 'data': {'order': 1}})
+    try:
+        assert entered.wait(5)
+        test_helper.main({'method': '.lq.Lobby.login', 'data': {'order': 2}})
+        test_helper.close()
+        test_helper.close()
+        test_helper.main({'method': '.lq.Lobby.login', 'data': {'order': 3}})
+        assert test_helper._worker.is_alive()
+    finally:
+        release.set()
+    _wait_for_queue(test_helper)
+    assert sent == [{'order': 1}]
+
+
+def test_http_error_does_not_stop_later_events(test_helper, monkeypatch):
+    sent = []
+
+    def post(url, **kwargs):
+        sent.append(kwargs['json'])
+        def check_status():
+            if len(sent) == 1:
+                raise requests.HTTPError('503')
+        return SimpleNamespace(raise_for_status=check_status)
+
+    monkeypatch.setattr('plugin.helper.requests.post', post)
+    test_helper.main({'method': '.lq.Lobby.login', 'data': {'order': 1}})
+    test_helper.main({'method': '.lq.Lobby.login', 'data': {'order': 2}})
+    _wait_for_queue(test_helper)
+    assert sent == [{'order': 1}, {'order': 2}]
+
+
+def test_new_round_does_not_mutate_parsed_message(test_helper, monkeypatch):
+    sent = []
+    monkeypatch.setattr('plugin.helper.requests.post', lambda url, **kwargs: (
+        sent.append(kwargs['json']), SimpleNamespace(raise_for_status=lambda: None))[1])
+    result = {'method': '.lq.ActionPrototype',
+              'data': {'name': 'ActionNewRound', 'data': {'sha256': 'a' * 64}}}
+    test_helper.main(result)
+    _wait_for_queue(test_helper)
+    assert sent[0]['md5'] == 'a' * 32
+    assert 'md5' not in result['data']['data']
+
+
+def test_unexpected_sender_error_does_not_kill_worker(test_helper, monkeypatch):
+    sent = []
+
+    def post(url, **kwargs):
+        sent.append(kwargs['json'])
+        if len(sent) == 1:
+            raise ValueError('invalid request payload')
+        return SimpleNamespace(raise_for_status=lambda: None)
+
+    monkeypatch.setattr('plugin.helper.requests.post', post)
+    test_helper.main({'method': '.lq.Lobby.login', 'data': {'order': 1}})
+    test_helper.main({'method': '.lq.Lobby.login', 'data': {'order': 2}})
+    _wait_for_queue(test_helper)
+    assert sent == [{'order': 1}, {'order': 2}]
+
+
+@pytest.mark.parametrize('size', [0, -1])
+def test_queue_must_have_positive_capacity(size):
+    with pytest.raises(ValueError, match='queue_size'):
+        helper(queue_size=size)

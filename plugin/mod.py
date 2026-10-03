@@ -1,11 +1,15 @@
-import liqi_new
 import random
 from pathlib import Path
-from ruamel.yaml import YAML
-from loguru import logger
-from struct import unpack
-from proto import liqi_pb2, basic_pb2
+
 from google.protobuf import json_format
+from loguru import logger
+from ruamel.yaml import YAML
+
+import liqi_new
+from plugin.results import HandlerResult, ModResult
+from proto import basic_pb2, liqi_pb2
+
+from plugin.storage import save_yaml
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -21,6 +25,17 @@ class mod:
         self.max_data = {}
         self.LoadSettings()
         logger.success('已载入mod')
+
+    def for_connection(self):
+        """复用本地配置和解锁数据，每个连接独立保存账号快照与保活凭证。"""
+        plugin = type(self).__new__(type(self))
+        plugin.version = self.version
+        plugin.yaml = self.yaml
+        plugin.settings = self.settings
+        plugin.max_data = self.max_data
+        plugin.safe = {}
+        plugin.contract = ''
+        return plugin
 
     def LoadSettings(self):
         self.settings = self.yaml.load('''\
@@ -98,10 +113,7 @@ config:
         return views.get(idx) or views.get(0) or {'name': '', 'values': []}
 
     def SaveSettings(self):
-        # 直接写盘（2026-08-13 起不再生成 .bak，用户明确要求）
-        target = BASE_DIR / 'config' / 'settings.mod.yaml'
-        with open(target, 'w', encoding='utf-8') as f:
-            self.yaml.dump(self.settings, f)
+        save_yaml(BASE_DIR / 'config' / 'settings.mod.yaml', self.settings, self.yaml)
 
     def load_max_data(self):
         with open(BASE_DIR / 'config' / 'max_data.yaml', 'r', encoding='utf-8') as f:
@@ -111,61 +123,32 @@ config:
     # ============ 消息分发 ============
     # 每个 case 一个 handler，按 method_name 查字典分发；main() 只做帧解析 + 收尾序列化。
 
-    def main(self, message, liqi_proto):
-        modify = False
-        drop = False
-        msg = b''
-        inject = False
-        inject_msg = b''
-        data = None  # 修改后的 proto 对象，收尾统一序列化
+    def main(self, message, liqi_proto) -> ModResult:
         buf = message.content
-        msg_type = liqi_new.MsgType(buf[0])
-        msg_block = basic_pb2.BaseMessage()
+        msg_type, msg_id, msg_block = liqi_new.parse_frame(message)
         if msg_type == liqi_new.MsgType.Notify:
-            # Notify没有msg_id
-            msg_block.ParseFromString(buf[1:])
             handler_name = _NOTIFY_HANDLERS.get(msg_block.method_name)
-            if handler_name is not None:
-                handler = getattr(self, handler_name)
-                modify, drop, data = handler(msg_block)
+        elif msg_type == liqi_new.MsgType.Req:
+            handler_name = _REQ_HANDLERS.get(msg_block.method_name)
         else:
-            msg_id = unpack('<H', buf[1:3])[0]
-            msg_block.ParseFromString(buf[3:])
-            if msg_type == liqi_new.MsgType.Req:
-                # Req类型必定是客户端发出的消息
-                assert (message.from_client)
-                assert (msg_id < 1 << 16)
-                handler_name = _REQ_HANDLERS.get(msg_block.method_name)
-                if handler_name is not None:
-                    fake = False
-                    handler = getattr(self, handler_name)
-                    modify, drop, fake, inject, inject_msg, data = handler(msg_block)
-                    if fake:
-                        # 伪造 loginBeat 回包：让服务端以为客户端还活着（防断线/保活）
-                        modify = True
-                        data = liqi_pb2.ReqLoginBeat()
-                        data.contract = self.contract
-                        msg_block.method_name = '.lq.Lobby.loginBeat'
-            elif msg_type == liqi_new.MsgType.Res:
-                # Res类型必定是客户端收到的消息
-                assert (not message.from_client)
-                assert (len(msg_block.method_name) == 0)
-                assert (msg_id in liqi_proto.res_type)
-                method_name, _ = liqi_proto.res_type[msg_id]
-                handler_name = _RES_HANDLERS.get(method_name)
-                if handler_name is not None:
-                    handler = getattr(self, handler_name)
-                    modify, drop, data = handler(msg_block)
-            else:
-                logger.error(f'unknown msgtype: {msg_type}')
-        if modify:
-            msg_block.data = data.SerializeToString()
-            if msg_type == liqi_new.MsgType.Notify:
-                msg = b'\x01' + msg_block.SerializeToString()
-            else:
-                msg = buf[:3] + msg_block.SerializeToString()
+            if msg_id not in liqi_proto.res_type:
+                raise ValueError("响应帧没有对应请求")
+            method_name, _ = liqi_proto.res_type[msg_id]
+            handler_name = _RES_HANDLERS.get(method_name)
 
-        return modify, drop, msg, inject, inject_msg
+        result = getattr(self, handler_name)(msg_block) if handler_name else HandlerResult()
+        data = result.data
+        if result.fake:
+            # 将本地装扮请求替换为保活请求，避免向服务端提交解锁数据。
+            data = liqi_pb2.ReqLoginBeat(contract=self.contract)
+            msg_block.method_name = '.lq.Lobby.loginBeat'
+        content = None
+        if result.modify or result.fake:
+            msg_block.data = data.SerializeToString()
+            prefix = buf[:1] if msg_type == liqi_new.MsgType.Notify else buf[:3]
+            content = prefix + msg_block.SerializeToString()
+        return ModResult(content=content, drop=result.drop,
+                         injected_content=result.injected_content)
 
     # ============ Notify handlers ============
 
@@ -175,12 +158,12 @@ config:
         data.ParseFromString(msg_block.data)
         if data.update.HasField('character'):
             drop = True
-        return False, drop, data
+        return HandlerResult(drop=drop, data=data)
 
     def _notify_room_player_update(self, msg_block):
         if not self.safe.get('account_id'):
             # 未登录（safe 未填充）前收到房间更新，无法识别自己，跳过修改
-            return False, False, None
+            return HandlerResult()
         modify = True
         data = liqi_pb2.NotifyRoomPlayerUpdate()
         data.ParseFromString(msg_block.data)
@@ -197,12 +180,12 @@ config:
                 p.character.charid=200001
                 p.character.skin=400101
                 p.avatar_id= 400101
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _notify_game_finish_reward_v2(self, msg_block):
         if not self.safe.get('main_character_id'):
             # 未登录（safe 未填充）前收到结算通知，无法定位主角色，跳过修改
-            return False, False, None
+            return HandlerResult()
         modify = True
         data = liqi_pb2.NotifyGameFinishRewardV2()
         data.ParseFromString(msg_block.data)
@@ -214,17 +197,17 @@ config:
         data.main_character.add = 0
         data.main_character.exp = 0
         data.main_character.level = 5
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _notify_custom_contest_system_msg(self, msg_block):
         if not self.settings['config']['show_server']:
-            return False, False, None
+            return HandlerResult()
         modify = True
         data = liqi_pb2.NotifyCustomContestSystemMsg()
         data.ParseFromString(msg_block.data)
         for p in data.game_start.players:
             p.nickname = self._prepend_zone(p.account_id, p.nickname)
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     # ============ Req handlers ============
 
@@ -234,7 +217,7 @@ config:
         data.ParseFromString(msg_block.data)
         self.settings['config']['character'] = data.character_id
         self.SaveSettings()
-        return False, False, fake, False, b'', data
+        return HandlerResult(fake=fake, data=data)
 
     def _req_change_character_skin(self, msg_block):
         fake = True
@@ -260,10 +243,10 @@ config:
         basic.method_name = '.lq.NotifyAccountUpdate'
         basic.data = update_data.SerializeToString()
         inject_msg = b'\x01' + basic.SerializeToString()
-        return False, False, fake, inject, inject_msg, data
+        return HandlerResult(fake=fake, injected_content=inject_msg if inject else None, data=data)
 
     def _req_add_finished_ending(self, msg_block):
-        return False, True, False, False, b'', None
+        return HandlerResult(drop=True)
 
     def _req_update_character_sort(self, msg_block):
         fake = True
@@ -273,7 +256,7 @@ config:
         self.settings['config']['star_chars'] = list(data.sort)
         self.settings['config']['other_sort'] = list(data.other_sort)
         self.SaveSettings()
-        return False, False, fake, False, b'', data
+        return HandlerResult(fake=fake, data=data)
 
     def _req_use_title(self, msg_block):
         fake = True
@@ -281,7 +264,7 @@ config:
         data.ParseFromString(msg_block.data)
         self.settings['config']['title'] = data.title
         self.SaveSettings()
-        return False, False, fake, False, b'', data
+        return HandlerResult(fake=fake, data=data)
 
     def _req_set_loading_image(self, msg_block):
         fake = True
@@ -290,7 +273,7 @@ config:
         self.settings['config']['loading_image'] = list(
             data.images)
         self.SaveSettings()
-        return False, False, fake, False, b'', data
+        return HandlerResult(fake=fake, data=data)
 
     def _req_save_common_views(self, msg_block):
         fake = True
@@ -311,20 +294,26 @@ config:
         if views['is_use'] == 1:
             self.settings['config']['views_index'] = views['save_index']
         self.SaveSettings()
-        return modify, False, fake, False, b'', data
+        return HandlerResult(modify=modify, fake=fake, data=data)
 
     def _req_use_common_view(self, msg_block):
         data = liqi_pb2.ReqUseCommonView()
         data.ParseFromString(msg_block.data)
         self.settings['config']['views_index'] = data.index
         self.SaveSettings()
-        return False, False, False, False, b'', data
+        return HandlerResult(data=data)
+
+    def _req_auth_game(self, msg_block):
+        # 对局使用独立 WebSocket，不能依赖大厅连接的登录状态。
+        data = liqi_pb2.ReqAuthGame.FromString(msg_block.data)
+        self.safe['account_id'] = data.account_id
+        return HandlerResult(data=data)
 
     def _req_login_beat(self, msg_block):
         data = liqi_pb2.ReqLoginBeat()
         data.ParseFromString(msg_block.data)
         self.contract = data.contract
-        return False, False, False, False, b'', data
+        return HandlerResult(data=data)
 
     def _req_read_announcement(self, msg_block):
         fake = False
@@ -332,10 +321,10 @@ config:
         data.ParseFromString(msg_block.data)
         if data.announcement_id == 666666:
             fake = True
-        return False, False, fake, False, b'', data
+        return HandlerResult(fake=fake, data=data)
 
     def _req_receive_character_rewards(self, msg_block):
-        return False, False, True, False, b'', None
+        return HandlerResult(fake=True)
 
     def _req_set_random_character(self, msg_block):
         fake = True
@@ -344,7 +333,7 @@ config:
         self.settings['config']['random_character']['enabled'] = data.enabled
         self.settings['config']['random_character']['pool'] = liqi_new.to_dict(data)['pool']
         self.SaveSettings()
-        return False, False, fake, False, b'', data
+        return HandlerResult(fake=fake, data=data)
 
     # ============ 共享 helper（fetchCharacterInfo / fetchInfo 等复用） ============
 
@@ -484,7 +473,7 @@ config:
         self.safe['characters'] = data.characters
         self._fill_characters(data)
         self.SaveSettings()  # _fill_characters 可能新增默认皮肤映射，需持久化
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_login(self, msg_block):
         modify = True
@@ -511,7 +500,7 @@ config:
         data.account.loading_image.extend(
             self.settings['config']['loading_image'])
         data.account.verified = self.settings['config']['verified']
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_create_room(self, msg_block):
         modify = True
@@ -529,7 +518,7 @@ config:
                     p.avatar_frame = frame
             if self.settings['config']['show_server']:
                 p.nickname = self._prepend_zone(p.account_id, p.nickname)
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_auth_game(self, msg_block):
         modify = True
@@ -572,7 +561,7 @@ config:
                 p.character.charid=200001
                 p.character.skin=400101
                 p.avatar_id= 400101
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_fetch_account_info(self, msg_block):
         modify = False
@@ -592,14 +581,14 @@ config:
             data.account.loading_image.extend(
                 self.settings['config']['loading_image'])
             data.account.verified = self.settings['config']['verified']
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_fetch_title_list(self, msg_block):
         modify = True
         data = liqi_pb2.ResTitleList()
         data.ParseFromString(msg_block.data)
         self._fill_title_list(data)
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_fetch_room(self, msg_block):
         modify = True
@@ -617,7 +606,7 @@ config:
                     p.avatar_frame = frame
             if self.settings['config']['show_server']:
                 p.nickname = self._prepend_zone(p.account_id, p.nickname)
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_fetch_bag_info(self, msg_block):
         modify = True
@@ -625,7 +614,7 @@ config:
         data.ParseFromString(msg_block.data)
         self.safe['items'] = data.bag.items
         self._fill_bag(data.bag)
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_fetch_all_common_views(self, msg_block):
         modify = True
@@ -633,7 +622,7 @@ config:
         # 先解析服务器返回（本地 views 全量覆盖，但保留字段契约，防未来依赖时炸）
         data.ParseFromString(msg_block.data)
         self._fill_common_views(data)
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_fetch_info(self, msg_block):
         modify = True
@@ -657,7 +646,7 @@ config:
         data.ClearField('random_character')
         json_format.ParseDict(self.settings['config']['random_character'],data.random_character)
         self.SaveSettings()  # _fill_characters 可能新增默认皮肤映射，需持久化
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_fetch_server_settings(self, msg_block):
         modify = False
@@ -668,7 +657,7 @@ config:
             data.settings.nickname_setting.enable = 0
             data.settings.nickname_setting.ClearField(
                 'nicknames')
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_fetch_game_record(self, msg_block):
         modify = True
@@ -710,13 +699,13 @@ config:
 
         result+='注意：只有在同一服务器才能添加好友！'
         logger.success(result)
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     def _res_fetch_random_character(self, msg_block):
         modify = True
         data = liqi_pb2.ResRandomCharacter()
         json_format.ParseDict(self.settings['config']['random_character'],data)
-        return modify, False, data
+        return HandlerResult(modify=modify, data=data)
 
     # ============ 纯函数（编码/区域） ============
 
@@ -767,8 +756,7 @@ config:
 
 
 # ============ 分发表：method_name -> handler 方法名 ============
-# main() 按消息类型查对应字典，handler 返回 (modify, drop, data) 或
-# (modify, drop, fake, inject, inject_msg, data)。
+# main() 按消息类型查对应字典，所有 handler 统一返回 HandlerResult。
 
 _NOTIFY_HANDLERS = {
     '.lq.NotifyAccountUpdate': '_notify_account_update',
@@ -778,6 +766,7 @@ _NOTIFY_HANDLERS = {
 }
 
 _REQ_HANDLERS = {
+    '.lq.FastTest.authGame': '_req_auth_game',
     '.lq.Lobby.changeMainCharacter': '_req_change_main_character',
     '.lq.Lobby.changeCharacterSkin': '_req_change_character_skin',
     '.lq.Lobby.addFinishedEnding': '_req_add_finished_ending',

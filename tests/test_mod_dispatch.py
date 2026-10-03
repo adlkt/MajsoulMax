@@ -9,10 +9,10 @@ import pytest
 
 import liqi_new
 from plugin.mod import (
-    mod,
     _NOTIFY_HANDLERS,
     _REQ_HANDLERS,
     _RES_HANDLERS,
+    mod,
 )
 from proto import basic_pb2, liqi_pb2
 
@@ -79,19 +79,19 @@ class TestMainDispatch:
         req = liqi_pb2.ReqLoginBeat()
         req.contract = "abc123"
         buf = _req_buf(".lq.Lobby.loginBeat", req.SerializeToString())
-        modify, drop, msg, inject, inject_msg = test_mod.main(
+        result = test_mod.main(
             SimpleNamespace(content=buf, from_client=True), lp)
         assert test_mod.contract == "abc123"
-        assert modify is False and drop is False
+        assert result.modify is False and result.drop is False
 
     def test_req_add_finished_ending_drops(self, test_mod):
         """Req.addFinishedEnding：直接 drop，不 modify。"""
         lp = liqi_new.LiqiProto()
         buf = _req_buf(".lq.Lobby.addFinishedEnding", b"")
-        modify, drop, msg, inject, inject_msg = test_mod.main(
+        result = test_mod.main(
             SimpleNamespace(content=buf, from_client=True), lp)
-        assert drop is True
-        assert modify is False
+        assert result.drop is True
+        assert result.modify is False
 
     def test_req_change_main_character_fakes_login_beat(self, test_mod):
         """Req.changeMainCharacter：fake=True → 伪造 loginBeat 回包。"""
@@ -101,14 +101,14 @@ class TestMainDispatch:
         req.character_id = 200002
         buf = _req_buf(".lq.Lobby.changeMainCharacter",
                        req.SerializeToString())
-        modify, drop, msg, inject, inject_msg = test_mod.main(
+        result = test_mod.main(
             SimpleNamespace(content=buf, from_client=True), lp)
-        assert modify is True
+        assert result.modify is True
         # 设置已保存
         assert test_mod.settings["config"]["character"] == 200002
         # 回包是 loginBeat
         blk = basic_pb2.BaseMessage()
-        blk.ParseFromString(msg[3:])
+        blk.ParseFromString(result.content[3:])
         assert blk.method_name == ".lq.Lobby.loginBeat"
         beat = liqi_pb2.ReqLoginBeat()
         beat.ParseFromString(blk.data)
@@ -118,15 +118,15 @@ class TestMainDispatch:
         """未注册的 Req 方法：不 modify 不 drop，原样放行。"""
         lp = liqi_new.LiqiProto()
         buf = _req_buf(".lq.Lobby.unknownMethod", b"\x01\x02\x03")
-        modify, drop, msg, inject, inject_msg = test_mod.main(
+        result = test_mod.main(
             SimpleNamespace(content=buf, from_client=True), lp)
-        assert modify is False and drop is False
+        assert result.modify is False and result.drop is False
 
     def test_res_requires_prior_req(self, test_mod):
-        """Res 无对应 Req：assert 失败（防错序/伪造消息）。"""
+        """无对应请求的响应应明确报错。"""
         lp = liqi_new.LiqiProto()
         buf = _res_buf(42, b"\x00")
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="没有对应请求"):
             test_mod.main(SimpleNamespace(content=buf, from_client=False), lp)
 
     def test_res_fetch_title_list_modifies(self, test_mod):
@@ -145,11 +145,11 @@ class TestMainDispatch:
         res = liqi_pb2.ResTitleList()
         res.title_list.extend([1, 2])
         buf = _res_buf(1, res.SerializeToString())
-        modify, drop, msg, inject, inject_msg = test_mod.main(
+        result = test_mod.main(
             SimpleNamespace(content=buf, from_client=False), lp)
-        assert modify is True
+        assert result.modify is True
         blk = basic_pb2.BaseMessage()
-        blk.ParseFromString(msg[3:])
+        blk.ParseFromString(result.content[3:])
         out = liqi_pb2.ResTitleList()
         out.ParseFromString(blk.data)
         assert list(out.title_list) == [101, 102, 103]
@@ -188,11 +188,11 @@ class TestMainDispatch:
                            liqi_pb2.ReqCommon().SerializeToString())
         lp.parse(SimpleNamespace(content=req_buf, from_client=True))
         buf = _res_buf(1, liqi_pb2.ResAllcommonViews().SerializeToString())
-        modify, drop, msg, inject, inject_msg = test_mod.main(
+        result = test_mod.main(
             SimpleNamespace(content=buf, from_client=False), lp)
-        assert modify is True
+        assert result.modify is True
         blk = basic_pb2.BaseMessage()
-        blk.ParseFromString(msg[3:])
+        blk.ParseFromString(result.content[3:])
         out = liqi_pb2.ResAllcommonViews()
         out.ParseFromString(blk.data)
         names = {v.index: v.name for v in out.views}
@@ -208,9 +208,9 @@ class TestMainDispatch:
         blk.method_name = ".lq.NotifyAccountUpdate"
         blk.data = n.SerializeToString()
         buf = b"\x01" + blk.SerializeToString()
-        modify, drop, msg, inject, inject_msg = test_mod.main(
+        result = test_mod.main(
             SimpleNamespace(content=buf, from_client=False), lp)
-        assert drop is True
+        assert result.drop is True
 
     def test_notify_unknown_passthrough(self, test_mod):
         """未注册的 Notify：不处理。"""
@@ -218,9 +218,9 @@ class TestMainDispatch:
         blk = basic_pb2.BaseMessage()
         blk.method_name = ".lq.NotifySomethingUnknown"
         buf = b"\x01" + blk.SerializeToString()
-        modify, drop, msg, inject, inject_msg = test_mod.main(
+        result = test_mod.main(
             SimpleNamespace(content=buf, from_client=False), lp)
-        assert modify is False and drop is False
+        assert result.modify is False and result.drop is False
 
     def test_res_auth_game_injects_self_views(self, test_mod):
         """Res.authGame 完整链路：自己玩家注入 + 随机装扮抽候选 + slot5 头像框。"""
@@ -245,12 +245,12 @@ class TestMainDispatch:
         p.nickname = "orig"
         buf = _res_buf(1, res.SerializeToString())
 
-        modify, drop, msg, inject, inject_msg = test_mod.main(
+        result = test_mod.main(
             SimpleNamespace(content=buf, from_client=False), lp)
 
-        assert modify is True
+        assert result.modify is True
         blk = basic_pb2.BaseMessage()
-        blk.ParseFromString(msg[3:])
+        blk.ParseFromString(result.content[3:])
         out = liqi_pb2.ResAuthGame()
         out.ParseFromString(blk.data)
         own = out.players[0]
@@ -275,9 +275,9 @@ class TestNotifyGameFinishRewardV2:
         blk.method_name = ".lq.NotifyGameFinishRewardV2"
         blk.data = n.SerializeToString()
 
-        modify, drop, data = test_mod._notify_game_finish_reward_v2(blk)
+        result = test_mod._notify_game_finish_reward_v2(blk)
 
-        assert modify is False and drop is False and data is None
+        assert result.modify is False and result.drop is False and result.data is None
 
     def test_logged_in_updates_main_character(self, test_mod):
         """已登录：主角色经验/等级被回填为满级、加 0 经验。"""
@@ -292,12 +292,12 @@ class TestNotifyGameFinishRewardV2:
         blk.method_name = ".lq.NotifyGameFinishRewardV2"
         blk.data = n.SerializeToString()
 
-        modify, drop, data = test_mod._notify_game_finish_reward_v2(blk)
+        result = test_mod._notify_game_finish_reward_v2(blk)
 
-        assert modify is True
-        assert data.main_character.level == 5
-        assert data.main_character.exp == 0
-        assert data.main_character.add == 0
+        assert result.modify is True
+        assert result.data.main_character.level == 5
+        assert result.data.main_character.exp == 0
+        assert result.data.main_character.add == 0
 
 
 class TestApplyViewSlots:

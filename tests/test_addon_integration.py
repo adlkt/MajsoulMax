@@ -1,21 +1,17 @@
 """addons.py 集成测试：直接驱动 MajsoulMaxAddon.websocket_message 事件链。
 
-用真实 mod_plugin/liqi_proto（模块级单例），mock flow/message 对象，
+用真实 mod/protocol 实例和临时配置目录，mock flow/message 对象，
 验证 addon → mod 处理 → liqi 解析 → 日志全链路。不做网络 I/O。
 """
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
 import addons
+from liqi_new import LiqiProto
+from plugin.mod import mod
 from proto import basic_pb2, liqi_pb2
-
-
-@pytest.fixture(autouse=True)
-def _no_disk_writes(monkeypatch):
-    """测试期间禁止 mod_plugin 写真实配置文件（SaveSettings 置空）。"""
-    if hasattr(addons, "mod_plugin"):
-        monkeypatch.setattr(addons.mod_plugin, "SaveSettings", lambda: None)
 
 
 @pytest.fixture(autouse=True)
@@ -44,7 +40,7 @@ class FakeMessage:
 
 def _make_flow(host: str = "game.maj-soul.com", path: str = "/1/ws",
                messages=None):
-    flow = SimpleNamespace()
+    flow = SimpleNamespace(id=str(uuid4()))
     flow.request = SimpleNamespace(host=host, path=path)
     flow.websocket = SimpleNamespace(messages=messages or [])
     return flow
@@ -58,8 +54,18 @@ def _notify_buf(method_name: str, data: bytes) -> bytes:
 
 
 @pytest.fixture
-def addon():
-    return addons.MajsoulMaxAddon()
+def addon(monkeypatch, tmp_path):
+    import plugin.mod as mod_module
+
+    monkeypatch.setattr(mod_module, "BASE_DIR", tmp_path)
+    monkeypatch.setattr(mod, "SaveSettings", lambda self: None)
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/max_data.yaml").write_text(
+        "character: [200001]\nskin: [400101]\ntitle: []\nitem: []\n"
+        "loading_image: []\nendings: []\nemoji: {}\n")
+    plugin = mod(addons.VERSION)
+    plugin.settings['config']['characters'][200001] = 400101
+    return addons.MajsoulMaxAddon(LiqiProto, plugin)
 
 
 class TestHostFiltering:
@@ -132,8 +138,8 @@ class TestReqFlow:
         beat_blk.method_name = ".lq.Lobby.loginBeat"
         beat_blk.data = beat.SerializeToString()
         beat_buf = b"\x02" + b"\x00\x00" + beat_blk.SerializeToString()
-        addon.websocket_message(_make_flow(
-            host="game.maj-soul.com", messages=[FakeMessage(beat_buf, from_client=True)]))
+        flow = _make_flow(messages=[FakeMessage(beat_buf, from_client=True)])
+        addon.websocket_message(flow)
 
         # 再 changeCharacterSkin
         req = liqi_pb2.ReqChangeCharacterSkin()
@@ -144,11 +150,19 @@ class TestReqFlow:
         blk.data = req.SerializeToString()
         buf = b"\x02" + b"\x01\x00" + blk.SerializeToString()
         msg = FakeMessage(buf, from_client=True)
-        flow = _make_flow(host="game.maj-soul.com", messages=[msg])
+        flow.websocket.messages.append(msg)
 
         addon.websocket_message(flow)
+        assert addon.connections[flow.id][1].contract == "abc"
         assert len(called) == 1  # inject.websocket 被调用
         assert called[0][0] == "inject.websocket"
+        outgoing = basic_pb2.BaseMessage.FromString(msg.content[3:])
+        assert outgoing.method_name == '.lq.Lobby.loginBeat'
+        assert liqi_pb2.ReqLoginBeat.FromString(outgoing.data).contract == 'abc'
+        injected = basic_pb2.BaseMessage.FromString(called[0][3][1:])
+        assert injected.method_name == '.lq.NotifyAccountUpdate'
+        update = liqi_pb2.NotifyAccountUpdate.FromString(injected.data)
+        assert update.update.character.characters[0].skin == 400101
 
     def test_skin_change_without_login_uses_empty_contract(self, addon, _fake_master):
         """未登录就改皮肤：contract 有空串兜底，不再抛 AttributeError，
@@ -208,9 +222,9 @@ class TestConfigMerge:
     def test_nested_keys_preserved(self):
         base = {"plugin_enable": {"mod": True, "helper": False},
                 "liqi": {"auto_update": True}}
-        addons._deep_merge(base, {"proxy": {"upstream": "direct"}})
+        addons._deep_merge(base, {"plugin_enable": {"mod": False}})
         assert base["plugin_enable"]["helper"] is False
-        assert base["proxy"]["upstream"] == "direct"
+        assert base["plugin_enable"]["mod"] is False
 
     def test_partial_nested_override(self):
         base = {"liqi": {"auto_update": True, "liqi_version": "1"}}
@@ -235,3 +249,155 @@ class TestSafeReplacePath:
     def test_traversal_rejected(self):
         assert addons._safe_replace_path("../../etc/passwd") is None
         assert addons._safe_replace_path("/../../etc/passwd") is None
+
+
+def _rpc_message(method, payload, msg_id=7):
+    blk = basic_pb2.BaseMessage(method_name=method, data=payload.SerializeToString())
+    kind = b"\x02" if method else b"\x03"
+    return FakeMessage(kind + msg_id.to_bytes(2, "little") + blk.SerializeToString(),
+                       from_client=bool(method))
+
+
+def test_connections_with_same_request_id_do_not_mix_accounts(addon, monkeypatch):
+    errors = []
+    monkeypatch.setattr(addons.logger, "error", lambda *args: errors.append(args))
+    monkeypatch.setattr(addons.logger, "warning", lambda *args: errors.append(args))
+    addon.mod_plugin.settings['config']['nickname'] = 'local'
+    addon.mod_plugin.settings['config']['show_server'] = False
+    first = _make_flow(messages=[_rpc_message(
+        '.lq.FastTest.authGame', liqi_pb2.ReqAuthGame(account_id=111))])
+    second = _make_flow(messages=[_rpc_message(
+        '.lq.FastTest.authGame', liqi_pb2.ReqAuthGame(account_id=222))])
+    addon.websocket_message(first)
+    addon.websocket_message(second)
+    for flow, own_id in ((second, 222), (first, 111)):
+        response = liqi_pb2.ResAuthGame()
+        for account_id in (111, 222):
+            player = response.players.add(account_id=account_id, nickname='server')
+            player.character.charid = 200001
+        message = _rpc_message('', response)
+        flow.websocket.messages.append(message)
+        addon.websocket_message(flow)
+        block = basic_pb2.BaseMessage.FromString(message.content[3:])
+        result = liqi_pb2.ResAuthGame.FromString(block.data)
+        assert [p.nickname for p in result.players] == [
+            'local' if account_id == own_id else 'server' for account_id in (111, 222)]
+        assert addon.connections[flow.id][0].res_type == {}
+    assert errors == []
+    assert addon.connections[first.id][1].safe is not addon.connections[second.id][1].safe
+
+
+def test_connections_with_same_id_match_different_response_types(addon, monkeypatch):
+    errors = []
+    monkeypatch.setattr(addons.logger, "error", lambda *args: errors.append(args))
+    monkeypatch.setattr(addons.logger, "warning", lambda *args: errors.append(args))
+    first = _make_flow(messages=[_rpc_message(
+        '.lq.Lobby.loginBeat', liqi_pb2.ReqLoginBeat(contract='first'))])
+    second = _make_flow(messages=[_rpc_message(
+        '.lq.Lobby.fetchTitleList', liqi_pb2.ReqCommon())])
+    addon.websocket_message(first)
+    addon.websocket_message(second)
+    assert addon.connections[first.id][0].res_type[7][0] == '.lq.Lobby.loginBeat'
+    assert addon.connections[second.id][0].res_type[7][0] == '.lq.Lobby.fetchTitleList'
+    first.websocket.messages.append(_rpc_message('', liqi_pb2.ResCommon()))
+    second.websocket.messages.append(_rpc_message('', liqi_pb2.ResTitleList()))
+    addon.websocket_message(first)
+    addon.websocket_message(second)
+    assert addon.connections[first.id][0].res_type == {}
+    assert addon.connections[second.id][0].res_type == {}
+    assert errors == []
+
+
+def test_connection_contract_and_cleanup(addon):
+    first = _make_flow(messages=[_rpc_message(
+        '.lq.Lobby.loginBeat', liqi_pb2.ReqLoginBeat(contract='first'))])
+    second = _make_flow(messages=[_rpc_message(
+        '.lq.Lobby.loginBeat', liqi_pb2.ReqLoginBeat(contract='second'))])
+    addon.websocket_message(first)
+    addon.websocket_message(second)
+    assert addon.connections[first.id][1].contract == 'first'
+    assert addon.connections[second.id][1].contract == 'second'
+    addon.websocket_end(first)
+    addon.websocket_end(first)  # 清理可重复，未处理过的连接也可安全关闭。
+    assert first.id not in addon.connections
+    assert second.id in addon.connections
+    addon.done()
+    assert addon.connections == {}
+
+
+def test_protocol_isolated_when_mod_disabled():
+    addon = addons.MajsoulMaxAddon(LiqiProto)
+    first = _make_flow(messages=[_rpc_message(
+        '.lq.Lobby.loginBeat', liqi_pb2.ReqLoginBeat())])
+    second = _make_flow(messages=[_rpc_message(
+        '.lq.Lobby.fetchTitleList', liqi_pb2.ReqCommon())])
+    addon.websocket_message(first)
+    addon.websocket_message(second)
+    assert addon.connections[first.id][1] is None
+    assert addon.connections[first.id][0].res_type[7][0] == '.lq.Lobby.loginBeat'
+    assert addon.connections[second.id][0].res_type[7][0] == '.lq.Lobby.fetchTitleList'
+
+
+def test_addon_shutdown_closes_helper():
+    closed = []
+    addon = addons.MajsoulMaxAddon(LiqiProto, helper_plugin=SimpleNamespace(
+        close=lambda: closed.append(True)))
+    addon.done()
+    assert closed == [True]
+
+
+class TestReplaceFallback:
+    @pytest.fixture
+    def replacement(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(addons, 'REPLACE_DIR', tmp_path)
+        addon = addons.MajsoulMaxAddon(LiqiProto, replace_plugin=SimpleNamespace(
+            main=lambda request: '/img/test.png'))
+        flow = _make_flow(path='/img/test.png')
+        flow.response = None
+        return addon, flow, tmp_path / 'img/test.png'
+
+    def test_missing_file_leaves_original_request(self, replacement, monkeypatch):
+        addon, flow, target = replacement
+        warnings = []
+        monkeypatch.setattr(addons.logger, 'warning', lambda *args: warnings.append(args))
+        addon.request(flow)
+        assert flow.response is None
+        assert flow.request.path == '/img/test.png'
+        assert warnings
+
+    @pytest.mark.parametrize('error', [PermissionError, IsADirectoryError, OSError])
+    def test_read_error_leaves_original_request(self, replacement, monkeypatch, error):
+        from pathlib import Path
+
+        addon, flow, target = replacement
+        warnings = []
+        monkeypatch.setattr(addons.logger, 'warning', lambda *args: warnings.append(args))
+
+        def fail_read(path):
+            raise error('cannot read replacement')
+
+        monkeypatch.setattr(Path, 'read_bytes', fail_read)
+        addon.request(flow)
+        assert flow.response is None
+        assert warnings
+
+    def test_valid_file_replaces_response(self, replacement):
+        addon, flow, target = replacement
+        target.parent.mkdir()
+        target.write_bytes(b'replacement-image')
+        addon.request(flow)
+        assert flow.response.status_code == 200
+        assert flow.response.content == b'replacement-image'
+
+    def test_empty_file_leaves_original_request(self, replacement):
+        addon, flow, target = replacement
+        target.parent.mkdir()
+        target.write_bytes(b'')
+        addon.request(flow)
+        assert flow.response is None
+
+    def test_traversal_leaves_original_request(self, replacement):
+        addon, flow, target = replacement
+        addon.replace_plugin.main = lambda request: '../../outside.png'
+        addon.request(flow)
+        assert flow.response is None

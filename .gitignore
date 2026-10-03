@@ -7,10 +7,5 @@ __pycache__
 
 .DS_Store
 
-# 自动生成内容：保留目录结构，忽略其中的文件（.gitkeep 占位保留空目录）
-config/*
-!config/.gitkeep
-proto/*
-!proto/.gitkeep
-
-
+/docs
+AGENTS.md

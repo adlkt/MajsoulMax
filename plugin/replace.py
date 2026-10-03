@@ -1,6 +1,9 @@
 from pathlib import Path
-from ruamel.yaml import YAML
+
 from loguru import logger
+from ruamel.yaml import YAML
+
+from plugin.storage import save_yaml
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -24,8 +27,7 @@ config:
             self.SaveSettings()
 
     def SaveSettings(self):
-        with open(BASE_DIR / 'config' / 'settings.replace.yaml', 'w', encoding='utf8') as f:
-            self.yaml.dump(self.settings, f)
+        save_yaml(BASE_DIR / 'config' / 'settings.replace.yaml', self.settings, self.yaml)
 
     def main(self, request):
         for path in self.settings['config']['http']:

@@ -1,13 +1,18 @@
-import requests
 import json
 from pathlib import Path
+
+import requests
+from google.protobuf import descriptor_pb2, descriptor_pool
 from loguru import logger
-from google.protobuf import descriptor_pb2
-from google.protobuf import descriptor_pool
 from ruamel.yaml import YAML
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 LIQI_FILES = {"max_data.yaml": "config", "liqi.desc": "proto"}
+
+def missing_local_files():
+    required = [BASE_DIR / directory / name for name, directory in LIQI_FILES.items()]
+    required.append(BASE_DIR / 'proto' / 'liqi.json')
+    return [path for path in required if not path.is_file()]
 
 def _auth_headers(token: str):
     headers = {"X-GitHub-Api-Version": "2022-11-28"}
@@ -78,6 +83,7 @@ def _validate_blobs(blobs: dict) -> None:
 def _atomic_write(name: str, content: bytes) -> None:
     """tmp 写入 + rename 原子替换：中途失败不会留下半截/损坏的目标文件。"""
     target = BASE_DIR / LIQI_FILES[name] / name
+    target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_suffix(target.suffix + ".tmp")
     tmp.write_bytes(content)
     tmp.replace(target)
@@ -111,8 +117,13 @@ def _generate_liqi_json():
 
 
 def update(max_version, liqi_version, token):
+    # RPC 映射可由本地描述文件重建，无需联网下载。
+    if (BASE_DIR / 'proto' / 'liqi.desc').is_file() and not (BASE_DIR / 'proto' / 'liqi.json').is_file():
+        _generate_liqi_json()
     req = _download_liqi_latest_release(token)
     if req.headers.get("X-RateLimit-Remaining") == "0":
+        if missing_local_files():
+            raise RuntimeError("GitHub API 额度已用完，无法下载首次启动所需数据；请稍后重试或配置 liqi.github_token")
         # 匿名 API 额度(60次/h)耗尽：无法确认远端版本，跳过本次检查。
         # 本地文件可能已是最新，不应误报"无法更新"。
         logger.warning("GitHub API 额度已用完，跳过 liqi 更新检查（本地版本：{}）。", liqi_version)
@@ -120,11 +131,11 @@ def update(max_version, liqi_version, token):
                        "max_data.yaml 放入 ./config/、liqi.desc 放入 ./proto/（均覆盖同名文件），"
                        "并将 ./config/settings.yaml 的 liqi.liqi_version 改为最新版本号")
         return liqi_version
-    
+    req.raise_for_status()
     liqi = req.json()
     new_version = liqi["tag_name"]
 
-    if liqi_version == new_version :
+    if liqi_version == new_version and not missing_local_files():
         logger.success(f"liqi文件无需更新，当前版本：{new_version}")
     else:
         blobs = _download_liqi_assets(liqi, token)
@@ -135,6 +146,7 @@ def update(max_version, liqi_version, token):
     
     req = _download_max_latest_release(token)
     if req.headers.get("X-RateLimit-Remaining") != "0":
+        req.raise_for_status()
         max = req.json()
         new_max_version = max["tag_name"]
         if max_version == new_max_version:

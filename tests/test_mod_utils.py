@@ -7,7 +7,7 @@ import pytest
 from ruamel.yaml import YAML
 
 from plugin.mod import mod
-from proto import liqi_pb2, basic_pb2
+from proto import basic_pb2, liqi_pb2
 
 
 @pytest.fixture
@@ -131,9 +131,9 @@ class TestUpdateCharacterSort:
         block = basic_pb2.BaseMessage()
         block.data = req.SerializeToString()
 
-        modify, drop, fake, inject, inject_msg, data = pure_mod._req_update_character_sort(block)
+        result = pure_mod._req_update_character_sort(block)
 
-        assert fake is True, "updateCharacterSort 请求应被拦截（不发给服务器）"
+        assert result.fake is True, "updateCharacterSort 请求应被拦截（不发给服务器）"
         assert pure_mod.settings["config"]["star_chars"] == [200050, 200041]
         assert pure_mod.settings["config"]["other_sort"] == [200001, 200002, 200003]
 
@@ -173,9 +173,9 @@ class TestUpdateCharacterSort:
 
 
 class TestSaveSettings:
-    """SaveSettings 直写盘：不生成 .bak（2026-08-13 用户要求移除备份逻辑）。"""
+    """SaveSettings 原子写盘，不生成 .bak 备份。"""
 
-    def test_writes_settings_directly(self, monkeypatch, tmp_path):
+    def test_writes_settings_without_backup(self, monkeypatch, tmp_path):
         import plugin.mod as mod_module
 
         m = mod_module.mod.__new__(mod_module.mod)

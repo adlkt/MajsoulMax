@@ -22,34 +22,33 @@ class TestToDict:
         assert d["account_id"] == 123
         assert d["token"] == "abc"
 
-    def test_legacy_param_path(self, monkeypatch):
-        """旧版 protobuf（<=4.x）路径：including 参数可用 → 走 try 分支。
+    @pytest.mark.parametrize('parameter', [
+        'including_default_value_fields', 'always_print_fields_with_no_presence'])
+    def test_parameter_detected_once(self, monkeypatch, parameter):
+        from inspect import Parameter, Signature
 
-        当前环境是 protobuf 7.x，真实执行只走 except 分支；这里 mock 旧版
-        行为验证 try 分支仍工作（在旧版 protobuf 环境下依赖不回归）。
-        """
-        def fake_legacy(proto_obj, **kwargs):
-            assert "including_default_value_fields" in kwargs
-            assert "always_print_fields_with_no_presence" not in kwargs
-            return {"account_id": 7}
+        calls = []
+        def converter(proto_obj, **kwargs):
+            assert kwargs == {'preserving_proto_field_name': True, parameter: True}
+            calls.append(proto_obj)
+            return {'account_id': 7}
 
-        monkeypatch.setattr(liqi_new, "MessageToDict", fake_legacy)
-        req = liqi_pb2.ReqAuthGame()
-        req.account_id = 7
-        assert liqi_new.to_dict(req) == {"account_id": 7}
+        converter.__signature__ = Signature([
+            Parameter('proto_obj', Parameter.POSITIONAL_OR_KEYWORD),
+            Parameter(parameter, Parameter.KEYWORD_ONLY, default=False)])
+        original_signature = liqi_new.signature
+        detections = []
+        def detect(function):
+            detections.append(function)
+            return original_signature(function)
 
-    def test_new_param_fallback(self, monkeypatch):
-        """新版 protobuf（5.x+）路径：including 参数移除抛 TypeError → 走 except 分支。"""
-        def fake_new(proto_obj, **kwargs):
-            if "including_default_value_fields" in kwargs:
-                raise TypeError("including_default_value_fields was removed")
-            assert "always_print_fields_with_no_presence" in kwargs
-            return {"account_id": 8}
-
-        monkeypatch.setattr(liqi_new, "MessageToDict", fake_new)
-        req = liqi_pb2.ReqAuthGame()
-        req.account_id = 8
-        assert liqi_new.to_dict(req) == {"account_id": 8}
+        monkeypatch.setattr(liqi_new, 'signature', detect)
+        monkeypatch.setattr(liqi_new, 'MessageToDict', converter)
+        req = liqi_pb2.ReqAuthGame(account_id=7)
+        assert liqi_new.to_dict(req) == {'account_id': 7}
+        assert liqi_new.to_dict(req) == {'account_id': 7}
+        assert len(calls) == 2
+        assert detections == [converter]
 
     def test_preserves_proto_field_names(self):
         """preserving_proto_field_name=True 应保持下划线命名而非 camelCase。"""
@@ -124,12 +123,12 @@ class TestLiqiProtoParse:
         assert r["data"]["type"] == 2
 
     def test_res_without_req_raises(self):
-        """孤儿 Res（无对应 Req）：assert msg_id in res_type 应失败（防错误流序）。"""
+        """孤儿响应明确报错，不依赖可被优化模式移除的 assert。"""
         lp = liqi_new.LiqiProto()
         res_payload = liqi_pb2.ResAuthGame()
         buf = b"\x03" + struct.pack("<H", 99) + _base_message(
             "", res_payload.SerializeToString())
-        with pytest.raises(AssertionError):
+        with pytest.raises(ValueError, match="没有对应请求"):
             lp.parse(SimpleNamespace(content=buf, from_client=False))
 
     def test_msg_id_reuse_overwrites(self):
@@ -145,3 +144,88 @@ class TestLiqiProtoParse:
         r = lp.parse(SimpleNamespace(content=buf2, from_client=True))
         assert r["method"] == ".lq.Lobby.fetchBagInfo"
         assert lp.res_type[3][0] == ".lq.Lobby.fetchBagInfo"
+
+
+@pytest.mark.parametrize('content', [b'', b'\x02', b'\x02\x01', b'\x03', b'\x03\x01', b'\x00', b'\xff'])
+def test_invalid_header_does_not_change_state(content):
+    lp = liqi_new.LiqiProto()
+    lp.res_type[42] = ('.lq.Lobby.loginBeat', liqi_pb2.ResCommon)
+    before = lp.res_type.copy()
+    with pytest.raises(ValueError):
+        lp.parse(SimpleNamespace(content=content, from_client=True))
+    assert lp.res_type == before
+    assert lp.tot == 0
+
+
+@pytest.mark.parametrize('kind,from_client', [(b'\x02', False), (b'\x03', True)])
+def test_wrong_direction_rejected(kind, from_client):
+    lp = liqi_new.LiqiProto()
+    with pytest.raises(ValueError, match='方向错误'):
+        lp.parse(SimpleNamespace(content=kind + b'\x01\x00', from_client=from_client))
+    assert lp.res_type == {}
+
+
+def test_response_with_method_rejected_without_consuming_request():
+    lp = liqi_new.LiqiProto()
+    lp.res_type[1] = ('.lq.Lobby.loginBeat', liqi_pb2.ResCommon)
+    bad = b'\x03\x01\x00' + _base_message('.lq.Lobby.loginBeat')
+    with pytest.raises(ValueError, match='方法名'):
+        lp.parse(SimpleNamespace(content=bad, from_client=False))
+    assert 1 in lp.res_type
+
+
+def test_malformed_response_keeps_request_for_valid_response():
+    from google.protobuf.message import DecodeError
+
+    lp = liqi_new.LiqiProto()
+    lp.res_type[65535] = ('.lq.Lobby.loginBeat', liqi_pb2.ResCommon)
+    prefix = b'\x03\xff\xff'
+    with pytest.raises(DecodeError):
+        lp.parse(SimpleNamespace(content=prefix + _base_message(data=b'\xff'), from_client=False))
+    assert lp.tot == 0
+    assert 65535 in lp.res_type
+    result = lp.parse(SimpleNamespace(content=prefix + _base_message(), from_client=False))
+    assert result['id'] == 65535
+    assert result['method'] == '.lq.Lobby.loginBeat'
+    assert lp.res_type == {}
+
+
+def test_response_conversion_failure_keeps_request(monkeypatch):
+    lp = liqi_new.LiqiProto()
+    lp.res_type[1] = ('.lq.Lobby.loginBeat', liqi_pb2.ResCommon)
+    original = liqi_new.to_dict
+
+    def fail_conversion(message):
+        raise ValueError('conversion failed')
+
+    monkeypatch.setattr(liqi_new, 'to_dict', fail_conversion)
+    response = SimpleNamespace(content=b'\x03\x01\x00' + _base_message(), from_client=False)
+    with pytest.raises(ValueError, match='conversion failed'):
+        lp.parse(response)
+    assert 1 in lp.res_type
+    monkeypatch.setattr(liqi_new, 'to_dict', original)
+    lp.parse(response)
+    assert lp.res_type == {}
+
+
+def test_type_prefix_removed_exactly(monkeypatch):
+    lp = liqi_new.LiqiProto()
+    lp.rpc_map = {'.lq.Test.call': {'req': '.lq.qRequest', 'resp': '.lq.lResponse'}}
+    monkeypatch.setattr(liqi_pb2, 'qRequest', liqi_pb2.ReqCommon, raising=False)
+    monkeypatch.setattr(liqi_pb2, 'lResponse', liqi_pb2.ResCommon, raising=False)
+    req = b'\x02\x01\x00' + _base_message('.lq.Test.call')
+    lp.parse(SimpleNamespace(content=req, from_client=True))
+    assert lp.res_type[1] == ('.lq.Test.call', liqi_pb2.ResCommon)
+    lp.parse(SimpleNamespace(content=b'\x03\x01\x00' + _base_message(), from_client=False))
+    assert lp.res_type == {}
+
+
+def test_invalid_reused_request_keeps_previous_match():
+    from google.protobuf.message import DecodeError
+
+    lp = liqi_new.LiqiProto()
+    lp.res_type[1] = ('.lq.Lobby.loginBeat', liqi_pb2.ResCommon)
+    bad = b'\x02\x01\x00' + _base_message('.lq.FastTest.authGame', b'\xff')
+    with pytest.raises(DecodeError):
+        lp.parse(SimpleNamespace(content=bad, from_client=True))
+    assert lp.res_type[1] == ('.lq.Lobby.loginBeat', liqi_pb2.ResCommon)
