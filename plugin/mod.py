@@ -1,4 +1,5 @@
 import liqi_new
+import json
 import random
 from ruamel.yaml import YAML
 from loguru import logger
@@ -73,6 +74,32 @@ config:
             yaml = YAML()
             self.max_data = yaml.load(f)
 
+    @staticmethod
+    def _remap_basic_emoji(content, source_character, target_character):
+        """Unity chara_emoji: character suffix * 10000 + basic index (0–8).
+
+        The 2026-10-06 upstream table follows this for all basic emojis, including
+        collaboration character IDs. Extra/skin/shared emojis have separate IDs
+        and unlock rules; do not infer their mapping from this formula.
+        """
+        if not source_character or not target_character:
+            return None
+        try:
+            payload = json.loads(content)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict) or type(payload.get('emo_id')) is not int:
+            return None
+        prefix = (source_character % 100000) * 10000
+        index = payload['emo_id'] - prefix
+        if not 0 <= index <= 8:
+            return None
+        mapped = (target_character % 100000) * 10000 + index
+        if mapped == payload['emo_id']:
+            return None
+        payload['emo_id'] = mapped
+        return json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+
     def main(self, message, liqi_proto):
         modify = False
         drop = False
@@ -89,6 +116,16 @@ config:
             msg_block.ParseFromString(buf[1:])
             method_name = msg_block.method_name
             match method_name:
+                case '.lq.NotifyGameBroadcast':
+                    mapping = self.safe.get('emoji_mapping')
+                    if mapping and mapping['seat'] is not None:
+                        data = liqi_pb2.NotifyGameBroadcast.FromString(msg_block.data)
+                        if data.seat == mapping['seat']:
+                            content = self._remap_basic_emoji(
+                                data.content, mapping['server'], mapping['local'])
+                            if content is not None:
+                                data.content = content
+                                modify = True
                 case '.lq.NotifyAccountUpdate':
                     data = liqi_pb2.NotifyAccountUpdate()
                     data.ParseFromString(msg_block.data)
@@ -155,6 +192,19 @@ config:
                 method_name = msg_block.method_name
                 # 根据method_name判断是否需要修改
                 match method_name:
+                    case '.lq.FastTest.authGame':
+                        data = liqi_pb2.ReqAuthGame.FromString(msg_block.data)
+                        self.safe['account_id'] = data.account_id
+                        self.safe.pop('emoji_mapping', None)
+                    case '.lq.FastTest.broadcastInGame':
+                        mapping = self.safe.get('emoji_mapping')
+                        if mapping:
+                            data = liqi_pb2.ReqBroadcastInGame.FromString(msg_block.data)
+                            content = self._remap_basic_emoji(
+                                data.content, mapping['local'], mapping['server'])
+                            if content is not None:
+                                data.content = content
+                                modify = True
                     case '.lq.Lobby.changeMainCharacter':  # 修改看板娘
                         fake = True
                         data = liqi_pb2.ReqChangeMainCharacter()
@@ -362,6 +412,12 @@ config:
                         modify = True
                         data = liqi_pb2.ResAuthGame()
                         data.ParseFromString(msg_block.data)
+                        self.safe.pop('emoji_mapping', None)
+                        if data.HasField('error') and data.error.code:
+                            return False, drop, msg, inject, inject_msg
+                        own_id = self.safe.get('account_id')
+                        own_seat = (list(data.seat_list).index(own_id)
+                                    if own_id in data.seat_list else None)
                         if self.settings['config']['bianjietishi']:
                             data.game_config.mode.detail_rule.bianjietishi = True
                             if data.game_config.meta.mode_id == 15 :
@@ -379,6 +435,7 @@ config:
                             p.character.rewarded_level.extend([1, 2, 3, 4, 5])
                             p.character.exp = 0
                             if p.account_id == self.safe['account_id']:
+                                server_character = p.character.charid
                                 if self.settings['config']['random_character']['enabled'] and self.settings['config']['random_character']['pool']!=[]: # 处理随机角色
                                     item = random.choice(self.settings['config']['random_character']['pool'])
                                     p.character.charid = item['character_id']
@@ -411,6 +468,12 @@ config:
                                 p.character.charid=200001
                                 p.character.skin=400101
                                 p.avatar_id= 400101
+                            if p.account_id == own_id:
+                                self.safe['emoji_mapping'] = {
+                                    'server': server_character,
+                                    'local': p.character.charid,
+                                    'seat': own_seat,
+                                }
                         for p in data.robots:
                             p.character.level = 5
                             p.character.is_upgraded = True
