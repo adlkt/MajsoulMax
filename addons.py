@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import signal
 import sys
@@ -124,6 +125,7 @@ class MajsoulMaxAddon:
         self.mod_plugin = mod_plugin
         self.helper_plugin = helper_plugin
         self.replace_plugin = replace_plugin
+        self.emoji_panel_assets = {}
         self.connections = {}
         self.traffic = TrafficStats()
 
@@ -206,6 +208,18 @@ class MajsoulMaxAddon:
         # 在捕获到HTTP消息时触发
         if not any(k in flow.request.host for k in self._hosts):
             return
+        if self.mod_plugin is not None:
+            from plugin.unity_emoji import PATCH_TAG
+            path = flow.request.path.partition('?')[0]
+            if path == '/_majsoulmax/emoji-panel-assets':
+                body = json.dumps({'tag': PATCH_TAG, 'assets': list(self.emoji_panel_assets.values())}).encode()
+                flow.response = http.Response.make(200, body, {'content-type': 'application/json', 'cache-control': 'no-store'})
+                return
+            if path in self.emoji_panel_assets:
+                flow.metadata['max_emoji_panel'] = True
+            if flow.metadata.get('max_emoji_panel') or path.endswith('.loader.js') or path.endswith('/bundle_info_so.majset'):
+                for header in ('if-none-match', 'if-modified-since'):
+                    flow.request.headers.pop(header, None)
         if self.replace_plugin is None:
             return
         path = self.replace_plugin.main(flow.request)
@@ -224,6 +238,43 @@ class MajsoulMaxAddon:
             return
         flow.response = http.Response.make(200, body)
         logger.debug("已替换资源：{}", flow.request.path)
+
+    def response(self, flow: http.HTTPFlow):
+        if self.mod_plugin is None or not any(k in flow.request.host for k in self._hosts):
+            return
+        path = flow.request.path.partition('?')[0]
+        if flow.response.status_code != 200:
+            return
+        is_loader = path.endswith('.loader.js') and '/Build/' in path
+        is_index = path.startswith('/assetbundles/') and path.endswith('/bundle_info_so.majset')
+        is_panel = flow.metadata.get('max_emoji_panel', False)
+        if not (is_loader or is_index or is_panel):
+            return
+        from plugin.unity_emoji import PATCH_TAG, patch_bundle, panel_bundle_names
+        try:
+            body = flow.response.content
+            if is_loader:
+                bootstrap = (BASE_DIR / 'plugin' / 'unity_emoji_bootstrap.js').read_bytes()
+                patched = body + b'\n' + bootstrap
+            elif is_index:
+                prefix = path.rsplit('/', 1)[0]
+                for name in panel_bundle_names(body):
+                    url = prefix + '/' + name
+                    self.emoji_panel_assets[url] = {'name': name, 'url': url}
+                return
+            elif is_panel:
+                patched = patch_bundle(body)
+                flow.response.headers['x-majsoulmax-emoji-panel'] = PATCH_TAG
+                logger.info('已更新 Unity 对局表情面板')
+            else:
+                return
+        except Exception as e:
+            logger.warning('Unity 表情面板补丁失败，保留原资源：{}', e)
+            return
+        flow.response.content = patched
+        for header in ('etag', 'last-modified'):
+            flow.response.headers.pop(header, None)
+        flow.response.headers['cache-control'] = 'no-store'
 
 
 async def start_mitm(port: int = 23410, addon=None):

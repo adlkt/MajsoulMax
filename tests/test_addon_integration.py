@@ -455,3 +455,184 @@ class TestReplaceFallback:
         addon.replace_plugin.main = lambda request: '../../outside.png'
         addon.request(flow)
         assert flow.response is None
+
+
+# Unity Web sends character-specific emo_id values instead of a shared ordinal.
+def _emoji_game(addon, server_character=200001, local_character=200050):
+    addon.mod_plugin.settings['config']['character'] = local_character
+    addon.mod_plugin.settings['config']['characters'][local_character] = 400501
+    flow = _make_flow(messages=[_rpc_message(
+        '.lq.FastTest.authGame', liqi_pb2.ReqAuthGame(account_id=111))])
+    addon.websocket_message(flow)
+    response = liqi_pb2.ResAuthGame(seat_list=[222, 111, 333])
+    player = response.players.add(account_id=111)
+    player.character.charid = server_character
+    message = _rpc_message('', response)
+    flow.websocket.messages.append(message)
+    addon.websocket_message(flow)
+    return flow
+
+
+@pytest.mark.parametrize('server_character,server_emoji', [
+    (200001, 10001), (200002, 20001), (20000107, 1070001)])
+def test_unity_emoji_request_and_own_broadcast_roundtrip(
+        addon, server_character, server_emoji):
+    import json
+    flow = _emoji_game(addon, server_character)
+    request = _rpc_message('.lq.FastTest.broadcastInGame',
+        liqi_pb2.ReqBroadcastInGame(content='{"emo_id":500001,"keep":true}',
+                                   except_self=True), msg_id=9)
+    flow.websocket.messages.append(request)
+    addon.websocket_message(flow)
+    block = basic_pb2.BaseMessage.FromString(request.content[3:])
+    sent = liqi_pb2.ReqBroadcastInGame.FromString(block.data)
+    assert json.loads(sent.content) == {'emo_id': server_emoji, 'keep': True}
+    assert sent.except_self is True
+    assert block.method_name == '.lq.FastTest.broadcastInGame'
+    assert request.content[:3] == b'\x02\x09\x00'
+    # The remote acceptance belongs to the same RPC, not a fake loginBeat.
+    response = _rpc_message('', liqi_pb2.ResCommon(), msg_id=9)
+    flow.websocket.messages.append(response)
+    addon.websocket_message(flow)
+    assert 9 not in addon.connections[flow.id][0].res_type
+    notification = liqi_pb2.NotifyGameBroadcast(
+        seat=1, content=json.dumps({'emo_id': server_emoji, 'keep': True}))
+    incoming = FakeMessage(_notify_buf('.lq.NotifyGameBroadcast',
+                                      notification.SerializeToString()))
+    flow.websocket.messages.append(incoming)
+    addon.websocket_message(flow)
+    block = basic_pb2.BaseMessage.FromString(incoming.content[1:])
+    displayed = liqi_pb2.NotifyGameBroadcast.FromString(block.data)
+    assert displayed.seat == 1
+    assert json.loads(displayed.content) == {'emo_id': 500001, 'keep': True}
+
+
+@pytest.mark.parametrize('content', [
+    '{"emo":1}', '{"emo_id":500010}', '{"emo_id":99990001}',
+    '{"emo_id":10001}', '{"emo_id":"500001"}', 'not JSON', '[]'])
+def test_unity_emoji_unrelated_or_extra_payload_passthrough(addon, content):
+    flow = _emoji_game(addon)
+    request = _rpc_message('.lq.FastTest.broadcastInGame',
+                          liqi_pb2.ReqBroadcastInGame(content=content), msg_id=9)
+    before = request.content
+    flow.websocket.messages.append(request)
+    addon.websocket_message(flow)
+    assert request.content == before
+
+
+def test_unity_emoji_other_players_are_not_remapped(addon):
+    flow = _emoji_game(addon)
+    notification = liqi_pb2.NotifyGameBroadcast(seat=0, content='{"emo_id":10001}')
+    message = FakeMessage(_notify_buf('.lq.NotifyGameBroadcast',
+                                     notification.SerializeToString()))
+    before = message.content
+    flow.websocket.messages.append(message)
+    addon.websocket_message(flow)
+    assert message.content == before
+
+
+def test_unity_emoji_no_game_snapshot_passthrough(addon):
+    request = _rpc_message('.lq.FastTest.broadcastInGame',
+                          liqi_pb2.ReqBroadcastInGame(content='{"emo_id":500001}'))
+    before = request.content
+    addon.websocket_message(_make_flow(messages=[request]))
+    assert request.content == before
+
+
+def test_unity_emoji_uses_actual_random_character(addon):
+    import json
+    addon.mod_plugin.settings['config']['random_character'] = {
+        'enabled': True, 'pool': [{'character_id': 200002, 'skin_id': 400201}]}
+    flow = _emoji_game(addon)
+    request = _rpc_message('.lq.FastTest.broadcastInGame',
+                          liqi_pb2.ReqBroadcastInGame(content='{"emo_id":20001}'))
+    flow.websocket.messages.append(request)
+    addon.websocket_message(flow)
+    block = basic_pb2.BaseMessage.FromString(request.content[3:])
+    assert json.loads(liqi_pb2.ReqBroadcastInGame.FromString(block.data).content)['emo_id'] == 10001
+
+
+@pytest.mark.parametrize('index', range(9))
+def test_unity_emoji_all_basic_indices(addon, index):
+    import json
+    flow = _emoji_game(addon)
+    request = _rpc_message('.lq.FastTest.broadcastInGame',
+        liqi_pb2.ReqBroadcastInGame(content=json.dumps({'emo_id': 500000 + index})))
+    flow.websocket.messages.append(request)
+    addon.websocket_message(flow)
+    block = basic_pb2.BaseMessage.FromString(request.content[3:])
+    sent = liqi_pb2.ReqBroadcastInGame.FromString(block.data)
+    assert json.loads(sent.content)['emo_id'] == 10000 + index
+
+
+def test_unity_emoji_missing_seat_does_not_rewrite_broadcast(addon):
+    flow = _emoji_game(addon)
+    addon.connections[flow.id][1].safe['emoji_mapping']['seat'] = None
+    message = FakeMessage(_notify_buf('.lq.NotifyGameBroadcast',
+        liqi_pb2.NotifyGameBroadcast(seat=0, content='{"emo_id":10001}').SerializeToString()))
+    before = message.content
+    flow.websocket.messages.append(message)
+    addon.websocket_message(flow)
+    assert message.content == before
+
+
+def test_unity_emoji_reauthentication_clears_previous_mapping(addon):
+    flow = _emoji_game(addon)
+    flow.websocket.messages.append(_rpc_message('.lq.FastTest.authGame',
+        liqi_pb2.ReqAuthGame(account_id=222), msg_id=10))
+    addon.websocket_message(flow)
+    response = liqi_pb2.ResAuthGame()
+    response.error.code = 1
+    flow.websocket.messages.append(_rpc_message('', response, msg_id=10))
+    addon.websocket_message(flow)
+    assert 'emoji_mapping' not in addon.connections[flow.id][1].safe
+
+
+def test_unity_emoji_game_connections_do_not_share_mapping(addon):
+    import json
+    first = _emoji_game(addon, 200001)
+    second = _emoji_game(addon, 200002)
+    for flow, expected in ((first, 10001), (second, 20001)):
+        request = _rpc_message('.lq.FastTest.broadcastInGame',
+            liqi_pb2.ReqBroadcastInGame(content='{"emo_id":500001}'), msg_id=9)
+        flow.websocket.messages.append(request)
+        addon.websocket_message(flow)
+        block = basic_pb2.BaseMessage.FromString(request.content[3:])
+        assert json.loads(liqi_pb2.ReqBroadcastInGame.FromString(block.data).content)['emo_id'] == expected
+
+
+def test_unity_emoji_auth_filters_list_by_real_unlocked_set(addon):
+    flow = _emoji_game(addon)
+    # Re-authentication gives the original server state, not the first MOD output.
+    flow.websocket.messages.append(_rpc_message('.lq.FastTest.authGame',
+        liqi_pb2.ReqAuthGame(account_id=111), msg_id=10))
+    addon.websocket_message(flow)
+    response = liqi_pb2.ResAuthGame(seat_list=[222, 111, 333])
+    player = response.players.add(account_id=111)
+    player.character.charid = 200001
+    player.character.skin = 400101
+    player.character.extra_emoji.append(14)
+    player.character.enabled_emoji.extend(list(range(10000, 10009)) + [99990007])
+    message = _rpc_message('', response, msg_id=10)
+    flow.websocket.messages.append(message)
+    addon.websocket_message(flow)
+    block = basic_pb2.BaseMessage.FromString(message.content[3:])
+    displayed = liqi_pb2.ResAuthGame.FromString(block.data).players[0].character
+    assert list(displayed.enabled_emoji) == list(range(500000, 500009)) + [99990005]
+    assert list(displayed.extra_emoji) == [14]
+    assert displayed.skin == addon.mod_plugin.settings['config']['characters'][200050]
+    assert displayed.is_upgraded
+    # The allowed extra emoji follows the same send/receive path as basics.
+    request = _rpc_message('.lq.FastTest.broadcastInGame',
+        liqi_pb2.ReqBroadcastInGame(content='{"emo_id":99990005}'), msg_id=9)
+    flow.websocket.messages.append(request)
+    addon.websocket_message(flow)
+    block = basic_pb2.BaseMessage.FromString(request.content[3:])
+    assert liqi_pb2.ReqBroadcastInGame.FromString(block.data).content == '{"emo_id":99990007}'
+    notification = FakeMessage(_notify_buf('.lq.NotifyGameBroadcast',
+        liqi_pb2.NotifyGameBroadcast(seat=1,
+            content='{"emo_id":99990007,"emo":14}').SerializeToString()))
+    flow.websocket.messages.append(notification)
+    addon.websocket_message(flow)
+    block = basic_pb2.BaseMessage.FromString(notification.content[1:])
+    assert liqi_pb2.NotifyGameBroadcast.FromString(block.data).content == '{"emo_id":99990005,"emo":14}'

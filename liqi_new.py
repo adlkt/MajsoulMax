@@ -19,22 +19,26 @@ BASE_DIR = Path(__file__).resolve().parent
 def _default_fields_parameter(converter):
     """每个 protobuf 转换函数只检测一次参数，兼容旧版和新版。"""
     parameters = signature(converter).parameters
-    if 'always_print_fields_with_no_presence' in parameters:
-        return 'always_print_fields_with_no_presence'
-    return 'including_default_value_fields'
+    if "always_print_fields_with_no_presence" in parameters:
+        return "always_print_fields_with_no_presence"
+    return "including_default_value_fields"
 
 
 def to_dict(proto_obj):
     return MessageToDict(
-        proto_obj, preserving_proto_field_name=True,
-        **{_default_fields_parameter(MessageToDict): True})
+        proto_obj,
+        preserving_proto_field_name=True,
+        **{_default_fields_parameter(MessageToDict): True},
+    )
 
 
 def load_rpc_map():
     """加载只读 RPC 映射；启动后各连接复用，连接状态仍各自保存。"""
-    with open(BASE_DIR / 'proto' / 'liqi.json', encoding='utf-8') as f:
+    with open(BASE_DIR / "proto" / "liqi.json", encoding="utf-8") as f:
         mapping = json.load(f)
-    return MappingProxyType({method: MappingProxyType(types) for method, types in mapping.items()})
+    return MappingProxyType(
+        {method: MappingProxyType(types) for method, types in mapping.items()}
+    )
 
 
 class MsgType(Enum):
@@ -56,7 +60,7 @@ def parse_frame(flow_msg):
         raise ValueError("请求帧方向错误")
     if msg_type == MsgType.Res and flow_msg.from_client:
         raise ValueError("响应帧方向错误")
-    msg_id = None if msg_type == MsgType.Notify else unpack('<H', buf[1:3])[0]
+    msg_id = None if msg_type == MsgType.Notify else unpack("<H", buf[1:3])[0]
     block = basic_pb2.BaseMessage.FromString(buf[header_size:])
     if msg_type == MsgType.Res and block.method_name:
         raise ValueError("响应帧不能包含方法名")
@@ -64,9 +68,9 @@ def parse_frame(flow_msg):
 
 
 def _message_class(type_name):
-    if not type_name.startswith('.lq.'):
+    if not type_name.startswith(".lq."):
         raise ValueError("协议类型必须位于 .lq 命名空间")
-    return getattr(liqi_pb2, type_name.removeprefix('.lq.'))
+    return getattr(liqi_pb2, type_name.removeprefix(".lq."))
 
 
 class LiqiProto:
@@ -83,17 +87,19 @@ class LiqiProto:
             method_name = msg_block.method_name
             proto_obj = _message_class(method_name).FromString(msg_block.data)
             dict_obj = to_dict(proto_obj)
-            if method_name == '.lq.ActionPrototype':
-                action = base64.b64decode(dict_obj['data'], validate=True)
-                action_obj = getattr(liqi_pb2, dict_obj['name']).FromString(decode(action))
-                dict_obj['data'] = to_dict(action_obj)
+            if method_name == ".lq.ActionPrototype":
+                action = base64.b64decode(dict_obj["data"], validate=True)
+                action_obj = getattr(liqi_pb2, dict_obj["name"]).FromString(
+                    decode(action)
+                )
+                dict_obj["data"] = to_dict(action_obj)
             msg_id = self.tot
         elif msg_type == MsgType.Req:
             method_name = msg_block.method_name
             rpc = self.rpc_map[method_name]
-            proto_obj = _message_class(rpc['req']).FromString(msg_block.data)
+            proto_obj = _message_class(rpc["req"]).FromString(msg_block.data)
             dict_obj = to_dict(proto_obj)
-            response_class = _message_class(rpc['resp'])
+            response_class = _message_class(rpc["resp"])
             # 编号循环复用是合法行为；只有解析成功才覆盖旧匹配。
             self.res_type[msg_id] = (method_name, response_class)
         else:
@@ -105,11 +111,11 @@ class LiqiProto:
             # 畸形回包或转换失败不应提前消耗请求匹配。
             del self.res_type[msg_id]
         self.tot += 1
-        return {'id': msg_id, 'type': msg_type, 'method': method_name, 'data': dict_obj}
+        return {"id": msg_id, "type": msg_type, "method": method_name, "data": dict_obj}
 
 
 def decode(data: bytes):
-    keys = [0x84, 0x5e, 0x4e, 0x42, 0x39, 0xa2, 0x1f, 0x60, 0x1c]
+    keys = [0x84, 0x5E, 0x4E, 0x42, 0x39, 0xA2, 0x1F, 0x60, 0x1C]
     data = bytearray(data)
     k = len(keys)
     d = len(data)

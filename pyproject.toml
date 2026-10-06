@@ -9,6 +9,7 @@ dependencies = [
     "requests>=2.34.2",
     "ruamel.yaml>=0.19.1",
     "loguru>=0.7.3",
+    "UnityPy>=1.25.4,<2",
 ]
 
 [dependency-groups]

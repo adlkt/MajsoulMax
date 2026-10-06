@@ -7,6 +7,7 @@ from ruamel.yaml import YAML
 
 import liqi_new
 from plugin.results import HandlerResult, ModResult
+from plugin.emoji import remap_content, unlocked_mapping
 from proto import basic_pb2, liqi_pb2
 
 from plugin.storage import save_yaml
@@ -182,6 +183,30 @@ config:
                 p.avatar_id= 400101
         return HandlerResult(modify=modify, data=data)
 
+    def _req_broadcast_in_game(self, msg_block):
+        mapping = self.safe.get('emoji_mapping')
+        if not mapping:
+            return HandlerResult()
+        data = liqi_pb2.ReqBroadcastInGame.FromString(msg_block.data)
+        content = remap_content(data.content, mapping['send'])
+        if content is None:
+            return HandlerResult()
+        data.content = content
+        return HandlerResult(modify=True, data=data)
+
+    def _notify_game_broadcast(self, msg_block):
+        mapping = self.safe.get('emoji_mapping')
+        if not mapping or mapping['seat'] is None:
+            return HandlerResult()
+        data = liqi_pb2.NotifyGameBroadcast.FromString(msg_block.data)
+        if data.seat != mapping['seat']:
+            return HandlerResult()
+        content = remap_content(data.content, mapping['receive'])
+        if content is None:
+            return HandlerResult()
+        data.content = content
+        return HandlerResult(modify=True, data=data)
+
     def _notify_game_finish_reward_v2(self, msg_block):
         if not self.safe.get('main_character_id'):
             # 未登录（safe 未填充）前收到结算通知，无法定位主角色，跳过修改
@@ -307,6 +332,7 @@ config:
         # 对局使用独立 WebSocket，不能依赖大厅连接的登录状态。
         data = liqi_pb2.ReqAuthGame.FromString(msg_block.data)
         self.safe['account_id'] = data.account_id
+        self.safe.pop('emoji_mapping', None)
         return HandlerResult(data=data)
 
     def _req_login_beat(self, msg_block):
@@ -524,6 +550,11 @@ config:
         modify = True
         data = liqi_pb2.ResAuthGame()
         data.ParseFromString(msg_block.data)
+        self.safe.pop('emoji_mapping', None)
+        if data.HasField('error') and data.error.code:
+            return HandlerResult()
+        own_id = self.safe.get('account_id')
+        own_seat = list(data.seat_list).index(own_id) if own_id in data.seat_list else None
         if self.settings['config']['bianjietishi']:
             data.game_config.mode.detail_rule.bianjietishi = True
             if data.game_config.meta.mode_id == 15 :
@@ -541,6 +572,8 @@ config:
             p.character.rewarded_level.extend([1, 2, 3, 4, 5])
             p.character.exp = 0
             if p.account_id == self.safe['account_id']:
+                server_character = p.character.charid
+                server_emojis = list(p.character.enabled_emoji)
                 p.ClearField('views')
                 frame = self._apply_self_player(p, p.views)
                 if frame is not None:
@@ -552,6 +585,21 @@ config:
                 p.character.charid=200001
                 p.character.skin=400101
                 p.avatar_id= 400101
+            if p.account_id == own_id:
+                send, receive, extra_indices = unlocked_mapping(
+                    server_character, p.character.charid, server_emojis)
+                self.safe['emoji_mapping'] = {
+                    'server': server_character,
+                    'local': p.character.charid,
+                    'seat': own_seat,
+                    'send': send,
+                    'receive': receive,
+                }
+                # Only advertise emojis with a server-unlocked counterpart.
+                p.character.ClearField('enabled_emoji')
+                p.character.enabled_emoji.extend(send)
+                p.character.ClearField('extra_emoji')
+                p.character.extra_emoji.extend(extra_indices)
         for p in data.robots:
             p.character.level = 5
             p.character.is_upgraded = True
@@ -759,6 +807,7 @@ config:
 # main() 按消息类型查对应字典，所有 handler 统一返回 HandlerResult。
 
 _NOTIFY_HANDLERS = {
+    '.lq.NotifyGameBroadcast': '_notify_game_broadcast',
     '.lq.NotifyAccountUpdate': '_notify_account_update',
     '.lq.NotifyRoomPlayerUpdate': '_notify_room_player_update',
     '.lq.NotifyGameFinishRewardV2': '_notify_game_finish_reward_v2',
@@ -766,6 +815,7 @@ _NOTIFY_HANDLERS = {
 }
 
 _REQ_HANDLERS = {
+    '.lq.FastTest.broadcastInGame': '_req_broadcast_in_game',
     '.lq.FastTest.authGame': '_req_auth_game',
     '.lq.Lobby.changeMainCharacter': '_req_change_main_character',
     '.lq.Lobby.changeCharacterSkin': '_req_change_character_skin',
