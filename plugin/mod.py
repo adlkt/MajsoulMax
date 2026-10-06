@@ -1,5 +1,5 @@
 import liqi_new
-import json
+from plugin.emoji import remap_content, unlocked_mapping
 import random
 from ruamel.yaml import YAML
 from loguru import logger
@@ -74,32 +74,6 @@ config:
             yaml = YAML()
             self.max_data = yaml.load(f)
 
-    @staticmethod
-    def _remap_basic_emoji(content, source_character, target_character):
-        """Unity chara_emoji: character suffix * 10000 + basic index (0–8).
-
-        The 2026-10-06 upstream table follows this for all basic emojis, including
-        collaboration character IDs. Extra/skin/shared emojis have separate IDs
-        and unlock rules; do not infer their mapping from this formula.
-        """
-        if not source_character or not target_character:
-            return None
-        try:
-            payload = json.loads(content)
-        except (ValueError, TypeError):
-            return None
-        if not isinstance(payload, dict) or type(payload.get('emo_id')) is not int:
-            return None
-        prefix = (source_character % 100000) * 10000
-        index = payload['emo_id'] - prefix
-        if not 0 <= index <= 8:
-            return None
-        mapped = (target_character % 100000) * 10000 + index
-        if mapped == payload['emo_id']:
-            return None
-        payload['emo_id'] = mapped
-        return json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
-
     def main(self, message, liqi_proto):
         modify = False
         drop = False
@@ -121,8 +95,7 @@ config:
                     if mapping and mapping['seat'] is not None:
                         data = liqi_pb2.NotifyGameBroadcast.FromString(msg_block.data)
                         if data.seat == mapping['seat']:
-                            content = self._remap_basic_emoji(
-                                data.content, mapping['server'], mapping['local'])
+                            content = remap_content(data.content, mapping['receive'])
                             if content is not None:
                                 data.content = content
                                 modify = True
@@ -200,8 +173,7 @@ config:
                         mapping = self.safe.get('emoji_mapping')
                         if mapping:
                             data = liqi_pb2.ReqBroadcastInGame.FromString(msg_block.data)
-                            content = self._remap_basic_emoji(
-                                data.content, mapping['local'], mapping['server'])
+                            content = remap_content(data.content, mapping['send'])
                             if content is not None:
                                 data.content = content
                                 modify = True
@@ -436,6 +408,7 @@ config:
                             p.character.exp = 0
                             if p.account_id == self.safe['account_id']:
                                 server_character = p.character.charid
+                                server_emojis = list(p.character.enabled_emoji)
                                 if self.settings['config']['random_character']['enabled'] and self.settings['config']['random_character']['pool']!=[]: # 处理随机角色
                                     item = random.choice(self.settings['config']['random_character']['pool'])
                                     p.character.charid = item['character_id']
@@ -469,11 +442,19 @@ config:
                                 p.character.skin=400101
                                 p.avatar_id= 400101
                             if p.account_id == own_id:
+                                send, receive, indices = unlocked_mapping(
+                                    server_character, p.character.charid, server_emojis)
                                 self.safe['emoji_mapping'] = {
                                     'server': server_character,
                                     'local': p.character.charid,
                                     'seat': own_seat,
+                                    'send': send,
+                                    'receive': receive,
                                 }
+                                p.character.ClearField('enabled_emoji')
+                                p.character.enabled_emoji.extend(send)
+                                p.character.ClearField('extra_emoji')
+                                p.character.extra_emoji.extend(indices)
                         for p in data.robots:
                             p.character.level = 5
                             p.character.is_upgraded = True

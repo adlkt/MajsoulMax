@@ -55,13 +55,15 @@ class EmojiTests(unittest.TestCase):
         self.protocol.parse(message)
         return message
 
-    def auth(self, server_character=200001):
+    def auth(self, server_character=200001, enabled=None):
         self.process(request('.lq.FastTest.authGame',
                              liqi_pb2.ReqAuthGame(account_id=111)))
         data = liqi_pb2.ResAuthGame(seat_list=[222, 111, 333])
         player = data.players.add(account_id=111)
         player.character.charid = server_character
-        self.process(response(data))
+        if enabled is not None:
+            player.character.enabled_emoji.extend(enabled)
+        return self.process(response(data))
 
     def test_captured_unity_request_roundtrip(self):
         for server_character, prefix in ((200001, 10000), (200002, 20000),
@@ -143,6 +145,29 @@ class EmojiTests(unittest.TestCase):
         original = message.content
         self.process(message)
         self.assertEqual(message.content, original)
+
+    def test_real_permissions_filter_local_list_and_map_mooncake(self):
+        message = self.auth(enabled=list(range(10000, 10009)) + [99990007])
+        block = basic_pb2.BaseMessage.FromString(message.content[3:])
+        shown = liqi_pb2.ResAuthGame.FromString(block.data).players[0].character
+        self.assertEqual(list(shown.enabled_emoji), list(range(500000, 500009)) + [99990005])
+        self.assertEqual(list(shown.extra_emoji), [14])
+        self.assertTrue(shown.is_upgraded)
+        self.assertEqual(shown.skin, self.mod.settings['config']['characters'][200050])
+        sent = self.process(request('.lq.FastTest.broadcastInGame',
+            liqi_pb2.ReqBroadcastInGame(content='{"emo_id":99990005}'), 9))
+        payload = liqi_pb2.ReqBroadcastInGame.FromString(basic_pb2.BaseMessage.FromString(sent.content[3:]).data)
+        self.assertEqual(json.loads(payload.content)['emo_id'], 99990007)
+        self.process(response(liqi_pb2.ResCommon(), 9))
+        received = self.process(notification(1, '{"emo_id":99990007,"emo":14}'))
+        payload = liqi_pb2.NotifyGameBroadcast.FromString(basic_pb2.BaseMessage.FromString(received.content[1:]).data)
+        self.assertEqual(json.loads(payload.content), {'emo_id':99990005,'emo':14})
+
+    def test_expired_limited_emoji_disappears_on_next_auth(self):
+        self.auth(enabled=list(range(10000, 10009)) + [99990007])
+        self.assertIn(99990005, self.mod.safe['emoji_mapping']['send'])
+        self.auth(enabled=list(range(10000, 10009)))
+        self.assertNotIn(99990005, self.mod.safe['emoji_mapping']['send'])
 
 
 if __name__ == '__main__':
